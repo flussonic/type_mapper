@@ -27,6 +27,10 @@ You can use it to convert weakly structured and typed json input into strict typ
 This test shows what was all this for.
 
 ```
+-module(my_api).
+-compile(nowarn_unused_record).
+-compile(nowarn_unused_type).
+-compile({parse_transform,type_mapper}).
 
 -record(nested_rec, {
   key :: integer()
