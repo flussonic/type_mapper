@@ -1,0 +1,9 @@
+{application, type_mapper,
+ [
+  {description, "type_mapper"},
+  {vsn, "20.09.1"},
+  {registered, []},
+  {applications, []},
+  {modules, [type_mapper]},
+  {env, []}
+ ]}.
