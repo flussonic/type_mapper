@@ -57,3 +57,10 @@ outer_rec2json(_) ->
 
 ```
 
+
+Second important part is validation. Here is an example:
+
+```
+  {error, #{path := [t_non_neg_int,key], reason := non_integer}} = type_mapper:map(?MODULE, t_non_neg_int, #{key => <<"15">>}),
+```
+
