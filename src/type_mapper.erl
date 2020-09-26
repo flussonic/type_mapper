@@ -528,74 +528,107 @@ fill_map_fields2(Module, K, V, [{Ktype, Vtype}|MapFields], Acc, LastError, OutTy
 
 
 json_schema(Module, TName) ->
-  case user2json_schema(Module, TName) of
+  case type2json_schema(Module, TName) of
     {error, E} ->
       {error, E};
-    Schema ->
-      UserTypes = collect_schema_definitions(Module, TName, []) -- [TName],
-      Definitions = maps:from_list([{T,user2json_schema(Module,T)} || T <- UserTypes]),
+    #{} = Schema ->
+      Dependencies = fill_schema_dependencies(Module, TName, #{}),
       Schema#{
-        definitions => Definitions,
+        components => #{schemas => Dependencies},
         '$schema' => <<"http://json-schema.org/schema#">>
       }
   end.
 
 
-collect_schema_definitions(Module, TName, Acc) ->
+
+fill_schema_dependencies(Module, TName, Acc) ->
   case Module:'$mapper_type'(TName) of
-    undefined -> Acc;
+    undefined ->
+      case Module:'$mapper_record'(TName) of
+        undefined ->
+          Acc;
+        _ ->
+          R = fill_schema_dependencies_for_type(Module, #type{name=record,source=system,body=TName}, Acc),
+          R
+      end;
     #type{} = Type ->
-      find_schema_references_in_type(Module, Type, [TName] ++ Acc);
+      R = fill_schema_dependencies_for_type(Module, Type, Acc),
+      case R of
+        #{TName := _} -> R;
+        #{} -> R#{TName => build_js_type(Type)}
+      end;
     [_|_] = Types ->
-      Choices = [find_schema_references_in_type(Module, Type, [TName] ++ Acc) || Type <- Types],
-      lists:usort(lists:flatten(Choices))
+      MoreSchemas = lists:foldl(fun(T, A) ->
+        fill_schema_dependencies_for_type(Module, T, A)
+      end, Acc, Types),
+      case MoreSchemas of
+        #{TName := _} -> MoreSchemas;
+        #{} -> MoreSchemas#{TName => type2json_schema(Module, TName)}
+      end
   end.
 
-find_schema_references_in_type(Module, #type{name = record, body = RecName}, Acc) ->
-  case Module:'$mapper_record'(RecName) of
-    undefined -> Acc;
-    Fields ->
-      ReferencedTypes = lists:usort(lists:flatten([Types || #field{types = Types} <- Fields])),
-      UserTypes = lists:flatten([find_schema_references_in_type(Module, T, Acc) || T <- ReferencedTypes]) -- Acc,
 
-      Acc1 = lists:usort(UserTypes ++ Acc),
-      InnerTypes = lists:flatten([collect_schema_definitions(Module, T, Acc1) || T <- UserTypes]),
-      Acc2 = lists:usort(Acc1 ++ InnerTypes),
+fill_schema_dependencies_for_type(_, #type{name = record, body = Name}, Acc) when map_get(Name, Acc) ->
+  Acc;
+
+
+fill_schema_dependencies_for_type(Module, #type{name = record, body = RecName}, Acc) ->
+  case Module:'$mapper_record'(RecName) of
+    undefined ->
+      Acc;
+    Fields ->
+      RecordSpec = fields2json_schema(Module, Fields, #{}),
+      Acc1 = Acc#{RecName => RecordSpec},
+
+      ReferencedTypes = lists:usort(lists:flatten([Types || #field{types = Types} <- Fields])),
+      Acc2 = lists:foldl(fun(T, A) ->
+        fill_schema_dependencies_for_type(Module, T, A)
+      end, Acc1, ReferencedTypes),
       Acc2
   end;
 
-find_schema_references_in_type(_Module, #type{name=Name,source=user,body=undefined}, Acc) ->
-  [Name] -- Acc;
+fill_schema_dependencies_for_type(Module, #type{name=TName,source=user,body=undefined}, Acc) ->
+  Acc1 = fill_schema_dependencies(Module, TName, Acc),
+  Acc1;
 
-find_schema_references_in_type(Module, #type{name=list,body=Type}, Acc) ->
-  find_schema_references_in_type(Module, Type, Acc);
+fill_schema_dependencies_for_type(Module, #type{source=user,body=#type{} = Type}, Acc) ->
+  R = fill_schema_dependencies_for_type(Module, Type, Acc),
+  R;
 
-find_schema_references_in_type(Module, #type{name=map,body=[{_,Type}]}, Acc) ->
-  find_schema_references_in_type(Module, Type, Acc);
+fill_schema_dependencies_for_type(Module, #type{name=list,body=#type{} = Type}, Acc) ->
+  R = fill_schema_dependencies_for_type(Module, Type, Acc),
+  R;
 
-find_schema_references_in_type(_, #type{}, _Acc) ->
-  [].
+fill_schema_dependencies_for_type(Module, #type{name=map,body=MapBody}, Acc) ->
+  R = lists:foldl(fun({Key,Value}, A) ->
+    A1 = fill_schema_dependencies_for_type(Module, Key, A),
+    fill_schema_dependencies_for_type(Module, Value, A1)
+  end, Acc, MapBody),
+  R;
+
+fill_schema_dependencies_for_type(_, #type{}, Acc) ->
+  Acc.
 
 
 
 
 
 
-user2json_schema(Module, TName) ->
+
+
+type2json_schema(Module, TName) ->
   case Module:'$mapper_type'(TName) of
     undefined ->
-      {error, #{reason => unknown_type}};
-    #type{name = record, body = RecName} ->
-      case Module:'$mapper_record'(RecName) of
-        undefined ->
-          {error, #{reason => unknown_record}};
-        Fields ->
-          ObjectSpec = fields2json_schema(Module, Fields, #{
-            type => object,
-            properties => #{}
-          }),
-          ObjectSpec
+      case record2json_schema(Module, TName) of
+        #{error := _} ->
+          #{error => unknown_type, name => TName};
+        #{} = RecordSpec ->
+          RecordSpec
       end;
+    % #type{name = record, body = RecName} ->
+    %   record2json_schema(Module, RecName);
+    #type{name = record, body = RecName} ->
+      #{'$ref' => <<"#/components/schemas/",(atom_to_binary(RecName,latin1))/binary>>};
     #type{} = T ->
       build_js_type(T);
     [_|_] = Types ->
@@ -603,9 +636,19 @@ user2json_schema(Module, TName) ->
   end.
 
 
+record2json_schema(Module, RecName) ->
+  case Module:'$mapper_record'(RecName) of
+    undefined ->
+      #{error => unknown_record, name => RecName};
+    Fields ->
+      ObjectSpec = fields2json_schema(Module, Fields, #{}),
+      ObjectSpec
+  end.
 
-fields2json_schema(_, [], Acc) ->
-  Acc;
+
+
+fields2json_schema(_, [], ObjectSpec) ->
+  ObjectSpec#{type => object};
 
 fields2json_schema(Module, [#field{name=Name,default = Dfl, types=Types}|Fields], ObjectSpec) ->
   Spec1 = case Types of
@@ -629,11 +672,20 @@ fields2json_schema(Module, [#field{name=Name,default = Dfl, types=Types}|Fields]
   fields2json_schema(Module, Fields, ObjectSpec2).
 
 
+
+
+
+
 build_js_type(#type{name = deprecated, body = #type{} = Type}) ->
   #{} = Spec = build_js_type(Type),
   Spec#{deprecated => true};
+build_js_type(#type{source = user, body = #type{} = Type}) ->
+  #{} = Spec = build_js_type(Type),
+  Spec;
 build_js_type(#type{name = TName, source = user, body = undefined}) ->
-  #{'$ref' => <<"#/definitions/",(atom_to_binary(TName,latin1))/binary>>};
+  #{'$ref' => <<"#/components/schemas/",(atom_to_binary(TName,latin1))/binary>>};
+build_js_type(#type{name = record, source = system, body = RName}) ->
+  #{'$ref' => <<"#/components/schemas/",(atom_to_binary(RName,latin1))/binary>>};
 build_js_type(#type{name = non_neg_integer}) -> #{type => number};
 build_js_type(#type{name = integer}) -> #{type => number};
 build_js_type(#type{name = number}) -> #{type => number};
@@ -644,14 +696,23 @@ build_js_type(#type{name = boolean}) -> #{type => boolean};
 build_js_type(#type{name = list, body = B}) -> #{type => array, items => build_js_type(B)};
 build_js_type(#type{name = atom,source=value,body=V}) -> #{type => string, enum => [V]};
 build_js_type(#type{name = atom}) -> #{type => string};
-build_js_type(#type{name = map, body = [{_,Value}]}) ->
-  #{
-    type => object,
-    patternProperties => #{<<".*">> => build_js_type(Value)}
-  };
+build_js_type(#type{name = map, body = MapBody}) ->
+  build_js_map(MapBody, #{
+    type => object
+  });
 build_js_type(#type{name = any}) -> #{type => object}.
 
 
+
+build_js_map([], Spec) ->
+  Spec;
+build_js_map([{#type{source=value,body=Key},Value}|MapBody], #{} = Spec) ->
+  Properties = (maps:get(properties, Spec, #{}))#{Key => build_js_type(Value)},
+  build_js_map(MapBody, Spec#{properties => Properties});
+
+build_js_map([{#type{},Value}|MapBody], #{} = Spec) ->
+  Properties = (maps:get(patternProperties, Spec, #{}))#{<<".*">> => build_js_type(Value)},
+  build_js_map(MapBody, Spec#{patternProperties => Properties}).
 
 
 

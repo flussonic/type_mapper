@@ -27,9 +27,13 @@ all() ->
     boolean_schema,
     wrapped_type,
     user_union,
+    user_union_schema,
     map_type,
     map_type2map,
     map_type_schema,
+
+    map_with_values,
+    map_with_values_schema,
     typed_map,
     list_type,
     list_type_schema,
@@ -46,7 +50,13 @@ all() ->
     float_schema,
 
     any,
-    any_schema
+    any_schema,
+
+
+    referenced_types_schema1,
+    referenced_types_schema2,
+    referenced_types_schema3,
+    referenced_types_schema4
   ].
 
 
@@ -83,8 +93,9 @@ non_neg_integer2map(_) ->
 
 
 non_neg_integer_schema(_) ->
-  #{properties := #{ key := #{type := number}},
-  required := [key]} = type_mapper:json_schema(?MODULE, t_non_neg_int),
+  #{components := #{schemas := #{non_neg_integer := #{properties := #{ key := #{type := number}},
+  required := [key]}}},
+    '$ref' := <<"#/components/schemas/non_neg_integer">>} = type_mapper:json_schema(?MODULE, t_non_neg_int),
   ok.
 
 
@@ -129,9 +140,10 @@ integer_with_default(_) ->
 
 
 integer_with_default_schema(_) ->
-  #{properties := #{
+ #{components := #{schemas := #{integer_with_default := #{properties := #{
     key := #{type := number, default := 5}
-  }} = type_mapper:json_schema(?MODULE, integer_with_default).
+  }}}},
+  '$ref' := <<"#/components/schemas/integer_with_default">>} = type_mapper:json_schema(?MODULE, integer_with_default).
 
 
 
@@ -177,7 +189,7 @@ atom_value(_) ->
 
 
 atom_value_schema(_) ->
-  #{properties := #{
+  #{components := #{schemas := #{atom_value := #{properties := #{
     key := #{
       anyOf := [
         #{type := string, enum := [a]},
@@ -186,7 +198,8 @@ atom_value_schema(_) ->
         #{type := number}
       ]
     }
-  }} = type_mapper:json_schema(?MODULE, atom_value),
+  }}}},
+  '$ref' := <<"#/components/schemas/atom_value">>} = type_mapper:json_schema(?MODULE, atom_value),
   ok.
 
 
@@ -206,6 +219,44 @@ atom_type_schema(_) ->
   #{type := string} = type_mapper:json_schema(?MODULE, atom_type).
 
 
+
+
+-type map_with_values() :: #{
+  key1 => integer(),
+  atom() => binary()
+}.
+
+map_with_values(_) ->
+  #{key1 := 5, key2 := <<"6">>} = type_mapper:record(?MODULE, map_with_values, #{<<"key1">> => 5, key2 => <<"6">>}),
+  % Question: should we autoconvert unknown binary to atom??
+  % #{key1 := 5, key2 := <<"6">>} = type_mapper:record(?MODULE, map_with_values, #{<<"key1">> => 5, <<"key2">> => <<"6">>}),
+  {error, #{reason := unmatched_type, path := [map_with_values,<<"key2">>]}} = 
+    type_mapper:record(?MODULE, map_with_values, #{<<"key1">> => 5, <<"key2">> => <<"6">>}),
+  #{key1 := 5, key2 := <<"6">>} = type_mapper:record(?MODULE, map_with_values, #{key1 => 5, key2 => <<"6">>}),
+  {error, #{reason := non_integer, path := [map_with_values, <<"key1">>]}} = 
+    type_mapper:record(?MODULE, map_with_values, #{<<"key1">> => <<"5">>}),
+  ok.
+
+
+map_with_values_schema(_) ->
+  #{
+    type := object,
+    properties := #{
+      key1 := #{type := number}
+    },
+    patternProperties := #{
+      <<".*">> := #{type := string}
+    }
+  } = type_mapper:json_schema(?MODULE, map_with_values).
+
+
+
+
+
+
+
+
+
 -record(boolean, {
   key :: boolean()
 }).
@@ -221,9 +272,10 @@ boolean(_) ->
 
 
 boolean_schema(_) ->
-  #{properties := #{
+  #{components := #{schemas := #{boolean := #{properties := #{
     key := #{type := boolean}
-  }} = type_mapper:json_schema(?MODULE, t_boolean),
+  }}}},
+  '$ref' := <<"#/components/schemas/boolean">>} = type_mapper:json_schema(?MODULE, t_boolean),
   ok.
 
 
@@ -258,6 +310,24 @@ user_union(_) ->
   ok.
 
 
+user_union_schema(_) ->
+  #{components :=
+    #{schemas := #{
+      user_union := #{
+      
+      },
+      user_unioned := #{
+        type := object,
+        properties := #{
+          key := #{
+            '$ref' := <<"#/components/schemas/user_union">>
+          }
+        }
+      }
+    }},
+    '$ref' := <<"#/components/schemas/user_unioned">>
+  } = type_mapper:json_schema(?MODULE, user_unioned).
+
 
 -record(item, {
   title :: binary()
@@ -286,18 +356,23 @@ map_type2map(_) ->
 
 map_type_schema(_) ->
   #{
-    definitions := #{
-      item := #{}
-    },
-    type := object,
-    properties := #{
-      items := #{
-        type := object,
-        patternProperties := #{
-          <<".*">> := #{'$ref' := <<"#/definitions/item">>}
+    components := #{
+      schemas := #{
+        item := #{},
+        map_container := #{
+          type := object,
+          properties := #{
+            items := #{
+              type := object,
+              patternProperties := #{
+                <<".*">> := #{'$ref' := <<"#/components/schemas/item">>}
+              }
+            }
+          }        
         }
       }
-    }
+    },
+    '$ref' := <<"#/components/schemas/map_container">>
   } = type_mapper:json_schema(?MODULE, map_container).
 
 
@@ -353,25 +428,31 @@ list_type(_) ->
 
 list_type_schema(_) ->
   #{
-  definitions := #{
-    item := #{
-      type := object,
-      properties := #{
-        title := #{
-          type := string
+  components := #{
+    schemas := #{
+      item := #{
+        type := object,
+        properties := #{
+          title := #{
+            type := string
+          }
+        }
+      },
+      list_container := #{
+        type := object,
+        properties := #{
+          items := #{
+            type := array,
+            items := #{
+              '$ref' := <<"#/components/schemas/item">>
+            }
+          }
         }
       }
     }
   },
-  type := object,
-  properties := #{
-    items := #{
-      type := array,
-      items := #{
-        '$ref' := <<"#/definitions/item">>
-      }
-    }
-  }} = type_mapper:json_schema(?MODULE, list_container).
+  '$ref' := <<"#/components/schemas/list_container">>
+} = type_mapper:json_schema(?MODULE, list_container).
 
 
 
@@ -404,13 +485,24 @@ ranged_integer(_) ->
 
 
 -type deprecated(X) :: X.
+-type runtime(X) :: X.
 
 -type deprecated_integer() :: deprecated(integer()).
-
+-type runtime_integer() :: runtime(integer()).
+-record(inner_record, {
+  key = undefined :: integer()
+}).
+-type runtime_record() :: runtime(#inner_record{}).
 
 parameterised_type(_) ->
   5 = type_mapper:record(?MODULE, deprecated_integer, 5),
   {error, #{reason := non_integer}} = type_mapper:record(?MODULE, deprecated_integer, <<"5">>),
+
+  5 = type_mapper:record(?MODULE, runtime_integer, 5),
+  {error, #{reason := non_integer}} = type_mapper:record(?MODULE, runtime_integer, <<"5">>),
+
+  #inner_record{key = 5} = type_mapper:record(?MODULE, runtime_record, #{key =>5}),
+
   ok.
 
 
@@ -419,7 +511,26 @@ parameterised_type_schema(_) ->
   #{
     type := number,
     deprecated := true
-  } = type_mapper:json_schema(?MODULE, deprecated_integer).
+  } = type_mapper:json_schema(?MODULE, deprecated_integer),
+  #{
+    type := number
+  } = type_mapper:json_schema(?MODULE, runtime_integer),
+
+  % This case is not very clean, because it requires joining namespace of types and records.
+  % Do we really want it?
+  #{
+    components := #{
+      schemas := #{
+        inner_record := #{
+          properties := #{
+            key := #{type := number}
+          }
+        }
+      }
+    },
+    '$ref' := <<"#/components/schemas/inner_record">>
+  } = type_mapper:json_schema(?MODULE, runtime_record),
+  ok.  
 
 
 
@@ -470,6 +581,101 @@ number_schema(_) ->
 
 float_schema(_) ->
   #{type := number} = type_mapper:json_schema(?MODULE, float_type).
+
+
+
+
+
+-record(rts_record1, {
+  field1 = undefined :: integer()
+}).
+
+-type rec2_integer() :: integer().
+
+-record(rts_record2, {
+  field2 = undefined :: #rts_record1{},
+  field2_2 = undefined :: rec2_integer()
+}).
+
+-record(rts_record3, {
+  field3 = undefined :: #rts_record2{}
+}).
+
+-type rts_record3() :: #rts_record3{}.
+
+-record(rts_record4, {
+  field4 = undefined :: rts_record3()
+}).
+
+-type rts_record4() :: #rts_record4{}.
+
+
+referenced_types_schema1(_) ->
+  #{
+    type := object,
+    properties := #{
+      field1 := #{type := number}
+    }
+  } = type_mapper:json_schema(?MODULE, rts_record1).
+
+referenced_types_schema2(_) ->
+  #{
+    components := #{
+      schemas := #{
+        rts_record1 := #{
+          type := object,
+          properties := #{
+            field1 := #{type := number}
+          }          
+        },
+        rec2_integer := #{
+          type := number
+        }
+      }
+    },
+    type := object,
+    properties := #{
+      field2 := #{
+        '$ref' := <<"#/components/schemas/rts_record1">>
+      },
+      field2_2 := #{
+        '$ref' := <<"#/components/schemas/rec2_integer">>      
+      }
+    }
+  } = type_mapper:json_schema(?MODULE, rts_record2).
+
+referenced_types_schema3(_) ->
+  #{
+    components := #{
+      schemas := #{
+        rts_record1 := #{},
+        rts_record2 := #{},
+        rts_record3 := #{}
+      }
+    },
+    '$ref' := <<"#/components/schemas/rts_record3">>
+  } = type_mapper:json_schema(?MODULE, rts_record3).
+
+
+
+referenced_types_schema4(_) ->
+  #{
+    components := #{
+      schemas := #{
+        rts_record1 := #{},
+        rts_record2 := #{},
+        rts_record3 := #{},
+        rts_record4 := #{
+          properties := #{
+            field4 := #{'$ref' := <<"#/components/schemas/rts_record3">>}
+          }
+        }
+      }
+    },
+    '$ref' := <<"#/components/schemas/rts_record4">>
+  } = type_mapper:json_schema(?MODULE, rts_record4).
+
+
 
 
 
