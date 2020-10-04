@@ -56,7 +56,17 @@ all() ->
     referenced_types_schema1,
     referenced_types_schema2,
     referenced_types_schema3,
-    referenced_types_schema4
+    referenced_types_schema4,
+
+
+    validate_nontyped_record,
+    nontyped_record_schema,
+
+    erlang_pid_type,
+    erlang_pid_schema,
+
+
+    default_value
   ].
 
 
@@ -679,5 +689,58 @@ referenced_types_schema4(_) ->
 
 
 
+-record(nontyped_record, {
+  key = undefined :: non_neg_integer()
+}).
 
+validate_nontyped_record(_) ->
+  #nontyped_record{key = 5} = type_mapper:record(?MODULE, nontyped_record, #{<<"key">> => 5}),
+  ok.
+
+
+nontyped_record_schema(_) ->
+  #{
+    components := #{
+      schemas := #{
+        nontyped_record := #{
+          properties := #{
+            key := #{}
+          }
+        }
+      }
+    },
+    properties := #{key := #{type := number}},
+    type := object
+  } = type_mapper:json_schema(?MODULE, nontyped_record).
+
+
+
+-record(rec_with_pid, {
+  key1 = undefined :: pid(),
+  key2 = undefined :: non_neg_integer()
+}).
+
+erlang_pid_type(_) ->
+  Self = self(),
+  #rec_with_pid{key1 = Self, key2 = 5} = type_mapper:record(?MODULE, rec_with_pid, #{key1 => Self, key2 => 5}),
+  [{key2,5}] = maps:to_list(type_mapper:map(?MODULE, rec_with_pid, #{key1 => Self, key2 => 5})),
+  ok.
+
+
+erlang_pid_schema(_) ->
+  #{properties := Properties} = type_mapper:json_schema(?MODULE, rec_with_pid),
+  [{key2, #{type := number}}] = maps:to_list(Properties),
+  ok.
+
+
+
+
+
+-record(rec_with_default, {
+  key = undefined :: number()
+}).
+
+
+default_value(_) ->
+  #rec_with_default{key = undefined} = type_mapper:record(?MODULE, rec_with_default, #{key => undefined}).
 

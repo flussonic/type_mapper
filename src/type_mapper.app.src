@@ -3,7 +3,7 @@
   {description, "type_mapper"},
   {vsn, "20.09.1"},
   {registered, []},
-  {applications, []},
+  {applications, [kernel,stdlib]},
   {modules, [type_mapper]},
   {env, []}
  ]}.

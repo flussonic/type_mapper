@@ -9,6 +9,7 @@
 -record(field, {
   name,
   default,
+  default_type,
   types
 }).
 
@@ -168,13 +169,13 @@ cleanup_record_field({typed_record_field, Field, Type}, #state{} = State) ->
     {record_field, _, {atom, _, Name_}, _} -> Name_
   end,
 
-  Default = case Field of
+  {DefaultType,Default} = case Field of
     {record_field, _, _, {nil, _}} -> {list, []};
     {record_field, _, _, {map, _, []}} -> {map, #{}};
     {record_field, _, _, {map, _, [],_}} -> {map, #{}};
     {record_field, _, _, {ValueType, _, Value}} -> {ValueType, Value};
     {record_field, _, _, {ValueType, _, Value, _Args}} -> {ValueType, Value};
-    {record_field, _, _} -> undefined
+    {record_field, _, _} -> {undefined,undefined}
   end,
 
   DeunionedTypes = case parse_abst_type(Type, [], State) of
@@ -182,7 +183,7 @@ cleanup_record_field({typed_record_field, Field, Type}, #state{} = State) ->
     T_ when is_list(T_) -> T_
   end,
 
-  #field{name = Name, default = Default, types = DeunionedTypes};
+  #field{name = Name, default = Default, default_type = DefaultType, types = DeunionedTypes};
 
 cleanup_record_field({record_field, _, _}, #state{}) ->
   undefined;
@@ -210,6 +211,16 @@ cleanup_record_field({record_field, _, _, _}, #state{}) ->
 
 
 
+%
+% Эта функция ищет тип Name, объявленный в модуле Module и начинает
+% приводить Input к этому типу. Тип может быть как простым,
+% так и композитным. 
+% json2rec - основной метод, который честно исполняет все типы, приводя
+% грязный json-output к рекорду.
+%
+% json2map — упрощенный вариант, который все рекорды превращает в мапы,
+% но проверяет их типы.
+%
 
 map(Module, TName, Input) ->
   R = json2output(Module, TName, Input, map),
@@ -242,6 +253,8 @@ json2output(Module, TName, Input, OutType) ->
       case validate_against(Module, Input, [Type], undefined, OutType) of
         {ok, V} ->
           V;
+        skip ->
+          undefined;
         {error, #{} = E} ->
           {error, prepend(TName,E)}
       end;
@@ -249,11 +262,22 @@ json2output(Module, TName, Input, OutType) ->
       case validate_against(Module, Input, Types, undefined, OutType) of
         {ok, V} ->
           V;
+        skip ->
+          undefined;
         {error, #{} = E} ->
           {error, prepend(TName,E)}
       end;
     undefined ->
-      {error, #{reason => unknown_type, detail => TName}}
+      case translate_record(Module, TName, Input, OutType) of
+        {error, #{reason := unknown_record}} ->
+          {error, #{reason => unknown_type, detail => TName}};
+        {error, E} ->
+          {error, E};
+        Record when element(1,Record) == TName andalso OutType == record ->
+          Record;
+        #{} = Output when OutType == map ->
+          Output
+      end
   end.
 
 
@@ -289,7 +313,8 @@ translate_record(Module, RecName, Input, OutType) when
 fill_record_fields(_Module, Input, [], Record) ->
   {ok, Input, Record};
 
-fill_record_fields(Module, Input, [#field{name=Name,default = Default,types=Types}|Fields], Record) ->
+fill_record_fields(Module, Input, [#field{name=Name,default = DefaultValue,
+  default_type = DefaultType,types=Types}|Fields], Record) ->
   {Class, ExtractedValue, Input1} = case Input of
     [Head | Tail] ->
       {input, Head, Tail};
@@ -299,10 +324,8 @@ fill_record_fields(Module, Input, [#field{name=Name,default = Default,types=Type
       NameBin = atom_to_binary(Name,latin1),
       case Input of
         #{NameBin := V} -> {input, V, maps:without([NameBin], Input)};
-        _ when Default == undefined -> {lack, undefined, Input};
-        _ -> 
-          {_Type, DefaultValue} = Default,
-          {default, DefaultValue, Input}
+        _ when DefaultType == undefined -> {lack, undefined, Input};
+        _ -> {default, DefaultValue, Input}
       end
   end,
 
@@ -311,17 +334,17 @@ fill_record_fields(Module, Input, [#field{name=Name,default = Default,types=Type
     _ -> record
   end,
 
-  case Class of
-    default ->
+  if
+    Class == default orelse (Class == input andalso ExtractedValue == DefaultValue) ->
       NewOutput = case OutType of
         map -> Record;
         % map -> Record#{Name => ExtractedValue};
         record -> erlang:append_element(Record, ExtractedValue)
       end,
       fill_record_fields(Module, Input1, Fields, NewOutput);
-    lack ->
+    Class == lack ->
       {error, #{path => [Name], reason => lacks_mandatory}};
-    input ->
+    Class == input ->
       case validate_against(Module, ExtractedValue, Types, undefined, OutType) of
         {ok, Value} ->
           NewOutput = case OutType of
@@ -329,6 +352,8 @@ fill_record_fields(Module, Input, [#field{name=Name,default = Default,types=Type
             record -> erlang:append_element(Record, Value)
           end,
           fill_record_fields(Module, Input1, Fields, NewOutput);
+        skip ->
+          fill_record_fields(Module, Input1, Fields, Record);
         {error, #{} = E} ->
           {error, prepend(Name, E)}
       end
@@ -360,7 +385,7 @@ validate_against(Module, Input, [#type{name = integer}|Types], LastError, OutTyp
 validate_against(Module, Input, [#type{name = number}|Types], LastError, OutType) ->
   if
     is_number(Input) -> {ok, Input};
-    true -> validate_against(Module, Input, Types, or_(LastError,#{reason => non_number}), OutType)
+    true -> validate_against(Module, Input, Types, or_(LastError,#{reason => non_number, detail => Input}), OutType)
   end;
 
 validate_against(Module, Input, [#type{name = range, body = [From,To]}|Types], LastError, OutType) ->
@@ -375,6 +400,14 @@ validate_against(Module, Input, [#type{name = binary}|Types], LastError, OutType
     is_atom(Input) -> {ok, atom_to_binary(Input,latin1)};
     true -> validate_against(Module, Input, Types, or_(LastError,#{reason => non_binary, detail => Input}), OutType)
   end;
+
+validate_against(Module, Input, [#type{source = system, name = pid}|Types], LastError, OutType) ->
+  if
+    is_pid(Input) andalso OutType == record -> {ok, Input};
+    is_pid(Input) andalso OutType == map -> skip;
+    not is_pid(Input) -> validate_against(Module, Input, Types, or_(LastError,#{reason => non_pid}), OutType)
+  end;
+
 
 validate_against(Module, Input, [#type{source = value, body = ImmediateValue}|Types], LastError, OutType) ->
   if
@@ -542,16 +575,19 @@ json_schema(Module, TName) ->
 
 
 fill_schema_dependencies(Module, TName, Acc) ->
+  % ct:pal("filling ~p", [TName]),
   case Module:'$mapper_type'(TName) of
     undefined ->
       case Module:'$mapper_record'(TName) of
         undefined ->
           Acc;
         _ ->
+          % ct:pal("found record ~p", [TName]),
           R = fill_schema_dependencies_for_type(Module, #type{name=record,source=system,body=TName}, Acc),
           R
       end;
     #type{} = Type ->
+      % ct:pal("jump1 into ~p", [Type]),
       R = fill_schema_dependencies_for_type(Module, Type, Acc),
       case R of
         #{TName := _} -> R;
@@ -559,6 +595,7 @@ fill_schema_dependencies(Module, TName, Acc) ->
       end;
     [_|_] = Types ->
       MoreSchemas = lists:foldl(fun(T, A) ->
+        % ct:pal("jump2 into ~p", [T]),
         fill_schema_dependencies_for_type(Module, T, A)
       end, Acc, Types),
       case MoreSchemas of
@@ -569,21 +606,26 @@ fill_schema_dependencies(Module, TName, Acc) ->
 
 
 fill_schema_dependencies_for_type(_, #type{name = record, body = Name}, Acc) when map_get(Name, Acc) ->
+  % ct:pal("stop lookup for record ~p", [Name]),
   Acc;
 
 
 fill_schema_dependencies_for_type(Module, #type{name = record, body = RecName}, Acc) ->
   case Module:'$mapper_record'(RecName) of
     undefined ->
+      % ct:pal("unknown_record ~p", [RecName]),
       Acc;
     Fields ->
       RecordSpec = fields2json_schema(Module, Fields, #{}),
       Acc1 = Acc#{RecName => RecordSpec},
+      % ct:pal("filled recname for ~p", [RecName]),
 
       ReferencedTypes = lists:usort(lists:flatten([Types || #field{types = Types} <- Fields])),
+      % ct:pal("ReferencedTypes(~p): ~p, acc1: ~p", [RecName, ReferencedTypes, Acc1]),
       Acc2 = lists:foldl(fun(T, A) ->
         fill_schema_dependencies_for_type(Module, T, A)
       end, Acc1, ReferencedTypes),
+      % ct:pal("now acc2: ~p", [Acc2]),
       Acc2
   end;
 
@@ -660,8 +702,12 @@ fields2json_schema(Module, [#field{name=Name,default = Dfl, types=Types}|Fields]
     {_,DV} when DV == #{} orelse DV == undefined orelse DV == [] -> Spec1;
     {_,DefaultValue} -> Spec1#{default => DefaultValue}
   end,
-  Properties = (maps:get(properties, ObjectSpec, #{}))#{Name => Spec2},
-  ObjectSpec1 = ObjectSpec#{properties => Properties},
+  Properties1 = maps:get(properties, ObjectSpec, #{}),
+  Properties2 = case Spec2 of
+    undefined -> Properties1;
+    _ -> Properties1#{Name => Spec2}
+  end,
+  ObjectSpec1 = ObjectSpec#{properties => Properties2},
   ObjectSpec2 = case Dfl of
     undefined ->
       Required = maps:get(required, ObjectSpec, []) ++ [Name],
@@ -696,6 +742,7 @@ build_js_type(#type{name = boolean}) -> #{type => boolean};
 build_js_type(#type{name = list, body = B}) -> #{type => array, items => build_js_type(B)};
 build_js_type(#type{name = atom,source=value,body=V}) -> #{type => string, enum => [V]};
 build_js_type(#type{name = atom}) -> #{type => string};
+build_js_type(#type{name = pid}) -> undefined;
 build_js_type(#type{name = map, body = MapBody}) ->
   build_js_map(MapBody, #{
     type => object
