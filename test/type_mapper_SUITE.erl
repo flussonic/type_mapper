@@ -66,7 +66,10 @@ all() ->
     erlang_pid_schema,
 
 
-    default_value
+    default_value,
+    default_value_not_undefined,
+
+    atom_or_record
   ].
 
 
@@ -744,3 +747,28 @@ erlang_pid_schema(_) ->
 default_value(_) ->
   #rec_with_default{key = undefined} = type_mapper:record(?MODULE, rec_with_default, #{key => undefined}).
 
+
+
+-record(rec_with_default_non_undefined, {
+  key = true :: boolean(),
+  subrec = #rec_with_default{} :: #rec_with_default{},
+  submap = #{} :: #{}
+}).
+
+default_value_not_undefined(_) ->
+  #rec_with_default_non_undefined{key = true, submap = #{},
+    subrec = #rec_with_default{key = undefined}} = 
+    type_mapper:record(?MODULE, rec_with_default_non_undefined, #{key => true}),
+  #{key := true, submap := #{}, subrec := #{}} = type_mapper:map(?MODULE, rec_with_default_non_undefined, #{key => true}),
+  ok.
+
+
+-record(atom_or_record_rec, {
+  key = undefined :: non_neg_integer()
+}).
+
+-type atom_or_record() :: #atom_or_record_rec{} | atom.
+
+atom_or_record(_) ->
+  atom = type_mapper:record(?MODULE, atom_or_record, atom).
+  

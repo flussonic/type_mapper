@@ -1,23 +1,11 @@
 -module(type_mapper).
-
+-include("../include/type_mapper.hrl").
 -export([src/1, parse_transform/2]).
 
 -export([record/3, map/3, json_schema/2]).
 
 
-
--record(field, {
-  name,
-  default,
-  default_type,
-  types
-}).
-
--record(type, {
-  name,
-  source :: user | system | value | remote,
-  body = []
-}).
+-define(IS_TRIVIAL(X), (X == #{} orelse X == undefined orelse X == [])).
 
 -record(state, {
   user_types = #{},
@@ -102,7 +90,11 @@ find_types([{attribute, _, type, Body}|Rest], #state{user_types = Types} = State
 find_types([{attribute, _, record, Body}|Rest], #state{records = Records} = State) ->
   {R,Spec} = Body,
   Spec1 = [cleanup_record_field(S, State) || S <- Spec],
-  State1 = State#state{records = Records#{R => Spec1}},
+  Spec2 = lists:zipwith(fun
+    (#type_mapper_field{} = F, I) -> F#type_mapper_field{index = I+1};
+    (undefined, _) -> undefined
+  end, Spec1, lists:seq(1,length(Spec1))),
+  State1 = State#state{records = Records#{R => Spec2}},
   find_types(Rest, State1);
 
 find_types([_|Rest], State) ->
@@ -117,49 +109,49 @@ parse_abst_type({type, _, union, TypeOptions}, [], #state{} = State) ->
   [parse_abst_type(T, [], State) || T <- TypeOptions];
 
 parse_abst_type({type, _, record, [{atom,_,Name}]}, [], #state{}) ->
-  #type{name = record, source = system, body = Name};
+  #type_mapper_type{name = record, source = system, body = Name};
 
 parse_abst_type({type, _, range, [From,To]}, [], #state{} = _State) -> 
   {integer,_,F} = From,
   {integer,_,T} = To,
-  #type{name = range, source = system, body = [F,T]};
+  #type_mapper_type{name = range, source = system, body = [F,T]};
 
 parse_abst_type({type, _, map, Choices}, [], #state{} = State) ->
   Options = lists:map(fun({type, _, map_field_assoc, [Key, Value]}) ->
     {parse_abst_type(Key, [], State),
     parse_abst_type(Value, [], State)}
   end, Choices),
-  #type{name = map, source = system, body = Options};
+  #type_mapper_type{name = map, source = system, body = Options};
 
 parse_abst_type({type, _, list, [T]}, [], #state{} = State) ->
-  #type{name = list, source = system, body = parse_abst_type(T, [], State)};
+  #type_mapper_type{name = list, source = system, body = parse_abst_type(T, [], State)};
 
 parse_abst_type({type, _, tuple, SubTypes}, [], #state{} = State) ->
-  #type{name = tuple, source = system, body = [parse_abst_type(T, [], State) || T <- SubTypes]};
+  #type_mapper_type{name = tuple, source = system, body = [parse_abst_type(T, [], State) || T <- SubTypes]};
 
 parse_abst_type({type, _, TName, TBody}, [], #state{}) ->
-  #type{name = TName, source = system, body = TBody};
+  #type_mapper_type{name = TName, source = system, body = TBody};
 
 parse_abst_type({remote_type, _, Call}, [], #state{}) ->
   [{atom,_,Module},{atom,_,Name},[]] = Call,
-  #type{name = Name, source = remote, body = Module};
+  #type_mapper_type{name = Name, source = remote, body = Module};
 
 parse_abst_type({user_type, _, TName, []}, [], #state{}) ->
-  #type{name = TName, source = user, body = undefined};
+  #type_mapper_type{name = TName, source = user, body = undefined};
 
 parse_abst_type({user_type, _, TName, [T]}, [], #state{} = State) ->
-  #type{name = TName, source = user, body = parse_abst_type(T, [], State)};
+  #type_mapper_type{name = TName, source = user, body = parse_abst_type(T, [], State)};
 
 parse_abst_type({integer, _, Value}, [], #state{}) ->
-  #type{name = integer, source = value, body = Value};
+  #type_mapper_type{name = integer, source = value, body = Value};
 
 parse_abst_type({atom, _, Value}, [], #state{}) ->
-  #type{name = atom, source = value, body = Value};
+  #type_mapper_type{name = atom, source = value, body = Value};
 
 % this is for handling
 % -type deprecated_integer() :: deprecated(integer()).
 parse_abst_type({var, _, Name}, [{var, _, Name}], #state{}) ->
-  #type{name = identity, source = system, body = Name}.
+  #type_mapper_type{name = identity, source = system, body = Name}.
 
 
 
@@ -183,7 +175,7 @@ cleanup_record_field({typed_record_field, Field, Type}, #state{} = State) ->
     T_ when is_list(T_) -> T_
   end,
 
-  #field{name = Name, default = Default, default_type = DefaultType, types = DeunionedTypes};
+  #type_mapper_field{name = Name, default = Default, default_type = DefaultType, types = DeunionedTypes};
 
 cleanup_record_field({record_field, _, _}, #state{}) ->
   undefined;
@@ -236,7 +228,7 @@ record(Module, TName, Input) ->
 
 json2output(Module, TName, Input, OutType) ->
   case Module:'$mapper_type'(TName) of
-    #type{name = record, body = RecName} when is_map(Input) orelse is_tuple(Input)->
+    #type_mapper_type{name = record, body = RecName} when is_map(Input) orelse is_tuple(Input)->
       case translate_record(Module, RecName, Input, OutType) of
         {error, #{} = E} ->
           {error, prepend(TName, E)};
@@ -245,11 +237,11 @@ json2output(Module, TName, Input, OutType) ->
         #{} = Output when OutType == map ->
           Output
       end;
-    #type{name = record} ->
+    #type_mapper_type{name = record} ->
       {error, prepend(TName,#{reason => non_map_input})};
-    #type{name = identity} ->
+    #type_mapper_type{name = identity} ->
       {error, prepend(TName,#{reason => unhandled_identity})};
-    #type{} = Type ->
+    #type_mapper_type{} = Type ->
       case validate_against(Module, Input, [Type], undefined, OutType) of
         {ok, V} ->
           V;
@@ -305,7 +297,10 @@ translate_record(Module, RecName, Input, OutType) when
         {error, #{} = E} ->
           {error, E}
       end
-  end.
+  end;
+
+translate_record(_Module, RecName, _Input, _OutType) ->
+  {error, #{reason => scalar_input, record => RecName}}.
 
 
 
@@ -313,8 +308,14 @@ translate_record(Module, RecName, Input, OutType) when
 fill_record_fields(_Module, Input, [], Record) ->
   {ok, Input, Record};
 
-fill_record_fields(Module, Input, [#field{name=Name,default = DefaultValue,
+fill_record_fields(Module, Input, [#type_mapper_field{name=Name,default = DefaultValue,
   default_type = DefaultType,types=Types}|Fields], Record) ->
+
+  OutType = case Record of
+    #{} -> map;
+    _ -> record
+  end,
+
   {Class, ExtractedValue, Input1} = case Input of
     [Head | Tail] ->
       {input, Head, Tail};
@@ -325,20 +326,16 @@ fill_record_fields(Module, Input, [#field{name=Name,default = DefaultValue,
       case Input of
         #{NameBin := V} -> {input, V, maps:without([NameBin], Input)};
         _ when DefaultType == undefined -> {lack, undefined, Input};
+        _ when DefaultType == record -> {default, translate_record(Module, DefaultValue, #{}, OutType), Input};
         _ -> {default, DefaultValue, Input}
       end
-  end,
-
-  OutType = case Record of
-    #{} -> map;
-    _ -> record
   end,
 
   if
     Class == default orelse (Class == input andalso ExtractedValue == DefaultValue) ->
       NewOutput = case OutType of
-        map -> Record;
-        % map -> Record#{Name => ExtractedValue};
+        map when DefaultValue == undefined -> Record;
+        map -> Record#{Name => ExtractedValue};
         record -> erlang:append_element(Record, ExtractedValue)
       end,
       fill_record_fields(Module, Input1, Fields, NewOutput);
@@ -369,39 +366,39 @@ fill_record_fields(Module, Input, [#field{name=Name,default = DefaultValue,
 validate_against(_Module, _Input, [], LastError, _) ->
   {error, or_(LastError, #{reason => unmatched_type})};
 
-validate_against(Module, Input, [#type{name = non_neg_integer}|Types], LastError, OutType) ->
+validate_against(Module, Input, [#type_mapper_type{name = non_neg_integer}|Types], LastError, OutType) ->
   if
     is_integer(Input) andalso Input >= 0 -> {ok, Input};
     is_integer(Input) -> validate_against(Module, Input, Types, or_(LastError, #{reason => negative_integer}), OutType);
     true -> validate_against(Module, Input, Types, or_(LastError,#{reason => non_integer}), OutType)
   end;
 
-validate_against(Module, Input, [#type{name = integer}|Types], LastError, OutType) ->
+validate_against(Module, Input, [#type_mapper_type{name = integer}|Types], LastError, OutType) ->
   if
     is_integer(Input) -> {ok, Input};
     true -> validate_against(Module, Input, Types, or_(LastError,#{reason => non_integer}), OutType)
   end;
 
-validate_against(Module, Input, [#type{name = number}|Types], LastError, OutType) ->
+validate_against(Module, Input, [#type_mapper_type{name = number}|Types], LastError, OutType) ->
   if
     is_number(Input) -> {ok, Input};
     true -> validate_against(Module, Input, Types, or_(LastError,#{reason => non_number, detail => Input}), OutType)
   end;
 
-validate_against(Module, Input, [#type{name = range, body = [From,To]}|Types], LastError, OutType) ->
+validate_against(Module, Input, [#type_mapper_type{name = range, body = [From,To]}|Types], LastError, OutType) ->
   if
     From =< Input andalso Input =< To -> {ok, Input};
     true -> validate_against(Module, Input, Types, or_(LastError, #{reason => out_of_range}), OutType)
   end;
 
-validate_against(Module, Input, [#type{name = binary}|Types], LastError, OutType) ->
+validate_against(Module, Input, [#type_mapper_type{name = binary}|Types], LastError, OutType) ->
   if
     is_binary(Input) -> {ok, Input};
     is_atom(Input) -> {ok, atom_to_binary(Input,latin1)};
     true -> validate_against(Module, Input, Types, or_(LastError,#{reason => non_binary, detail => Input}), OutType)
   end;
 
-validate_against(Module, Input, [#type{source = system, name = pid}|Types], LastError, OutType) ->
+validate_against(Module, Input, [#type_mapper_type{source = system, name = pid}|Types], LastError, OutType) ->
   if
     is_pid(Input) andalso OutType == record -> {ok, Input};
     is_pid(Input) andalso OutType == map -> skip;
@@ -409,7 +406,7 @@ validate_against(Module, Input, [#type{source = system, name = pid}|Types], Last
   end;
 
 
-validate_against(Module, Input, [#type{source = value, body = ImmediateValue}|Types], LastError, OutType) ->
+validate_against(Module, Input, [#type_mapper_type{source = value, body = ImmediateValue}|Types], LastError, OutType) ->
   if
     Input == ImmediateValue orelse 
     (Input == null andalso ImmediateValue == undefined) ->
@@ -423,13 +420,13 @@ validate_against(Module, Input, [#type{source = value, body = ImmediateValue}|Ty
       validate_against(Module, Input, Types, LastError, OutType)
   end;
 
-validate_against(Module, Input, [#type{name = atom}|Types], LastError, OutType) ->
+validate_against(Module, Input, [#type_mapper_type{name = atom}|Types], LastError, OutType) ->
   if
     is_atom(Input) -> {ok, Input};
     true -> validate_against(Module, Input, Types, or_(LastError,#{reason => non_atom}), OutType)
   end;
 
-validate_against(Module, Input, [#type{name = TName, source = user, body = undefined}|Types], LastError, OutType) ->
+validate_against(Module, Input, [#type_mapper_type{name = TName, source = user, body = undefined}|Types], LastError, OutType) ->
   case json2output(Module, TName, Input, OutType) of
     {error, E} ->
       validate_against(Module, Input, Types, or_(LastError, E), OutType);
@@ -437,7 +434,7 @@ validate_against(Module, Input, [#type{name = TName, source = user, body = undef
       {ok, Data}
   end;
 
-validate_against(Module, Input, [#type{source = user, body = Type}|Types], LastError, OutType) ->
+validate_against(Module, Input, [#type_mapper_type{source = user, body = Type}|Types], LastError, OutType) ->
   case validate_against(Module, Input, [Type], LastError, OutType) of
     {error, E} ->
       validate_against(Module, Input, Types, or_(LastError, E), OutType);
@@ -445,7 +442,7 @@ validate_against(Module, Input, [#type{source = user, body = Type}|Types], LastE
       {ok, Data}
   end;
 
-validate_against(Module, Input, [#type{name = boolean}|Types], LastError, OutType) ->
+validate_against(Module, Input, [#type_mapper_type{name = boolean}|Types], LastError, OutType) ->
   case Input of
     true -> {ok, true};
     <<"true">> -> {ok, true};
@@ -455,7 +452,7 @@ validate_against(Module, Input, [#type{name = boolean}|Types], LastError, OutTyp
   end;
 
 
-validate_against(Module, #{} = Input, [#type{name=map, body = MapFields}|Types], LastError, OutType) ->
+validate_against(Module, #{} = Input, [#type_mapper_type{name=map, body = MapFields}|Types], LastError, OutType) ->
   case fill_map_fields(Module, maps:to_list(Input), MapFields, #{}, OutType) of
     {ok, Data} ->
       {ok, Data};
@@ -463,11 +460,11 @@ validate_against(Module, #{} = Input, [#type{name=map, body = MapFields}|Types],
       validate_against(Module, Input, Types, or_(LastError, E), OutType)
   end;
 
-validate_against(Module, Input, [#type{name=map}|Types], LastError, OutType) ->
+validate_against(Module, Input, [#type_mapper_type{name=map}|Types], LastError, OutType) ->
   validate_against(Module, Input, Types, or_(LastError, #{reason => non_map_value}), OutType);
 
 
-validate_against(Module, Input, [#type{name=list, body = Type}|Types], LastError, OutType) when is_list(Input) ->
+validate_against(Module, Input, [#type_mapper_type{name=list, body = Type}|Types], LastError, OutType) when is_list(Input) ->
   Values = lists:foldr(fun
     (_I, #{} = E) ->
       E;
@@ -482,11 +479,11 @@ validate_against(Module, Input, [#type{name=list, body = Type}|Types], LastError
     _ -> {ok, Values}
   end;
 
-validate_against(Module, Input, [#type{name=list}|Types], LastError, OutType) ->
+validate_against(Module, Input, [#type_mapper_type{name=list}|Types], LastError, OutType) ->
   validate_against(Module, Input, Types, or_(LastError, #{reason => non_list}), OutType);
 
 
-validate_against(Module, Input, [#type{name=record,source=system,body=RecName}|Types], LastError, OutType) ->
+validate_against(Module, Input, [#type_mapper_type{name=record,source=system,body=RecName}|Types], LastError, OutType) ->
   case translate_record(Module, RecName, Input, OutType) of
     {error, #{} = E} ->
       validate_against(Module, Input, Types, or_(LastError,E), OutType);
@@ -496,7 +493,7 @@ validate_against(Module, Input, [#type{name=record,source=system,body=RecName}|T
       {ok, Output}
   end;
 
-validate_against(_Module, Input, [#type{name=any}|_], _, _) ->
+validate_against(_Module, Input, [#type_mapper_type{name=any}|_], _, _) ->
   {ok, Input}.
 
 
@@ -535,7 +532,7 @@ fill_map_fields2(Module, K, V, [{Ktype, Vtype}|MapFields], Acc, LastError, OutTy
           {ok, Acc#{K1 => V1}};
         {error, #{} = E} ->
           case Ktype of
-            #type{source = value, body = K} ->
+            #type_mapper_type{source = value, body = K} ->
               {error, prepend(K,E)};
             _ ->
               fill_map_fields2(Module, K, V, MapFields, Acc, or_(LastError, prepend(K,E)), OutType)
@@ -583,10 +580,10 @@ fill_schema_dependencies(Module, TName, Acc) ->
           Acc;
         _ ->
           % ct:pal("found record ~p", [TName]),
-          R = fill_schema_dependencies_for_type(Module, #type{name=record,source=system,body=TName}, Acc),
+          R = fill_schema_dependencies_for_type(Module, #type_mapper_type{name=record,source=system,body=TName}, Acc),
           R
       end;
-    #type{} = Type ->
+    #type_mapper_type{} = Type ->
       % ct:pal("jump1 into ~p", [Type]),
       R = fill_schema_dependencies_for_type(Module, Type, Acc),
       case R of
@@ -605,12 +602,12 @@ fill_schema_dependencies(Module, TName, Acc) ->
   end.
 
 
-fill_schema_dependencies_for_type(_, #type{name = record, body = Name}, Acc) when map_get(Name, Acc) ->
+fill_schema_dependencies_for_type(_, #type_mapper_type{name = record, body = Name}, Acc) when map_get(Name, Acc) ->
   % ct:pal("stop lookup for record ~p", [Name]),
   Acc;
 
 
-fill_schema_dependencies_for_type(Module, #type{name = record, body = RecName}, Acc) ->
+fill_schema_dependencies_for_type(Module, #type_mapper_type{name = record, body = RecName}, Acc) ->
   case Module:'$mapper_record'(RecName) of
     undefined ->
       % ct:pal("unknown_record ~p", [RecName]),
@@ -620,7 +617,7 @@ fill_schema_dependencies_for_type(Module, #type{name = record, body = RecName}, 
       Acc1 = Acc#{RecName => RecordSpec},
       % ct:pal("filled recname for ~p", [RecName]),
 
-      ReferencedTypes = lists:usort(lists:flatten([Types || #field{types = Types} <- Fields])),
+      ReferencedTypes = lists:usort(lists:flatten([Types || #type_mapper_field{types = Types} <- Fields])),
       % ct:pal("ReferencedTypes(~p): ~p, acc1: ~p", [RecName, ReferencedTypes, Acc1]),
       Acc2 = lists:foldl(fun(T, A) ->
         fill_schema_dependencies_for_type(Module, T, A)
@@ -629,26 +626,26 @@ fill_schema_dependencies_for_type(Module, #type{name = record, body = RecName}, 
       Acc2
   end;
 
-fill_schema_dependencies_for_type(Module, #type{name=TName,source=user,body=undefined}, Acc) ->
+fill_schema_dependencies_for_type(Module, #type_mapper_type{name=TName,source=user,body=undefined}, Acc) ->
   Acc1 = fill_schema_dependencies(Module, TName, Acc),
   Acc1;
 
-fill_schema_dependencies_for_type(Module, #type{source=user,body=#type{} = Type}, Acc) ->
+fill_schema_dependencies_for_type(Module, #type_mapper_type{source=user,body=#type_mapper_type{} = Type}, Acc) ->
   R = fill_schema_dependencies_for_type(Module, Type, Acc),
   R;
 
-fill_schema_dependencies_for_type(Module, #type{name=list,body=#type{} = Type}, Acc) ->
+fill_schema_dependencies_for_type(Module, #type_mapper_type{name=list,body=#type_mapper_type{} = Type}, Acc) ->
   R = fill_schema_dependencies_for_type(Module, Type, Acc),
   R;
 
-fill_schema_dependencies_for_type(Module, #type{name=map,body=MapBody}, Acc) ->
+fill_schema_dependencies_for_type(Module, #type_mapper_type{name=map,body=MapBody}, Acc) ->
   R = lists:foldl(fun({Key,Value}, A) ->
     A1 = fill_schema_dependencies_for_type(Module, Key, A),
     fill_schema_dependencies_for_type(Module, Value, A1)
   end, Acc, MapBody),
   R;
 
-fill_schema_dependencies_for_type(_, #type{}, Acc) ->
+fill_schema_dependencies_for_type(_, #type_mapper_type{}, Acc) ->
   Acc.
 
 
@@ -667,11 +664,11 @@ type2json_schema(Module, TName) ->
         #{} = RecordSpec ->
           RecordSpec
       end;
-    % #type{name = record, body = RecName} ->
+    % #type_mapper_type{name = record, body = RecName} ->
     %   record2json_schema(Module, RecName);
-    #type{name = record, body = RecName} ->
+    #type_mapper_type{name = record, body = RecName} ->
       #{'$ref' => <<"#/components/schemas/",(atom_to_binary(RecName,latin1))/binary>>};
-    #type{} = T ->
+    #type_mapper_type{} = T ->
       build_js_type(T);
     [_|_] = Types ->
       #{anyOf => [build_js_type(T) || T <- Types]}
@@ -692,15 +689,15 @@ record2json_schema(Module, RecName) ->
 fields2json_schema(_, [], ObjectSpec) ->
   ObjectSpec#{type => object};
 
-fields2json_schema(Module, [#field{name=Name,default = Dfl, types=Types}|Fields], ObjectSpec) ->
+fields2json_schema(Module, [#type_mapper_field{name=Name,default = Dfl, default_type = DflT, types=Types}|Fields], ObjectSpec) ->
   Spec1 = case Types of
-    [#type{} = T] -> build_js_type(T);
+    [#type_mapper_type{} = T] -> build_js_type(T);
     [_,_|_] -> #{anyOf => [build_js_type(T) || T <- Types]}
   end,
   Spec2 = case Dfl of
-    undefined -> Spec1;
-    {_,DV} when DV == #{} orelse DV == undefined orelse DV == [] -> Spec1;
-    {_,DefaultValue} -> Spec1#{default => DefaultValue}
+    undefined when DflT == undefined -> Spec1;
+    DV when ?IS_TRIVIAL(DV) -> Spec1;
+    DefaultValue -> Spec1#{default => DefaultValue}
   end,
   Properties1 = maps:get(properties, ObjectSpec, #{}),
   Properties2 = case Spec2 of
@@ -722,42 +719,42 @@ fields2json_schema(Module, [#field{name=Name,default = Dfl, types=Types}|Fields]
 
 
 
-build_js_type(#type{name = deprecated, body = #type{} = Type}) ->
+build_js_type(#type_mapper_type{name = deprecated, body = #type_mapper_type{} = Type}) ->
   #{} = Spec = build_js_type(Type),
   Spec#{deprecated => true};
-build_js_type(#type{source = user, body = #type{} = Type}) ->
+build_js_type(#type_mapper_type{source = user, body = #type_mapper_type{} = Type}) ->
   #{} = Spec = build_js_type(Type),
   Spec;
-build_js_type(#type{name = TName, source = user, body = undefined}) ->
+build_js_type(#type_mapper_type{name = TName, source = user, body = undefined}) ->
   #{'$ref' => <<"#/components/schemas/",(atom_to_binary(TName,latin1))/binary>>};
-build_js_type(#type{name = record, source = system, body = RName}) ->
+build_js_type(#type_mapper_type{name = record, source = system, body = RName}) ->
   #{'$ref' => <<"#/components/schemas/",(atom_to_binary(RName,latin1))/binary>>};
-build_js_type(#type{name = non_neg_integer}) -> #{type => number};
-build_js_type(#type{name = integer}) -> #{type => number};
-build_js_type(#type{name = number}) -> #{type => number};
-build_js_type(#type{name = float}) -> #{type => number};
-build_js_type(#type{name = range, body = [From,To]}) -> #{type => number, minimum => From, maximum => To};
-build_js_type(#type{name = binary}) -> #{type => string};
-build_js_type(#type{name = boolean}) -> #{type => boolean};
-build_js_type(#type{name = list, body = B}) -> #{type => array, items => build_js_type(B)};
-build_js_type(#type{name = atom,source=value,body=V}) -> #{type => string, enum => [V]};
-build_js_type(#type{name = atom}) -> #{type => string};
-build_js_type(#type{name = pid}) -> undefined;
-build_js_type(#type{name = map, body = MapBody}) ->
+build_js_type(#type_mapper_type{name = non_neg_integer}) -> #{type => number};
+build_js_type(#type_mapper_type{name = integer}) -> #{type => number};
+build_js_type(#type_mapper_type{name = number}) -> #{type => number};
+build_js_type(#type_mapper_type{name = float}) -> #{type => number};
+build_js_type(#type_mapper_type{name = range, body = [From,To]}) -> #{type => number, minimum => From, maximum => To};
+build_js_type(#type_mapper_type{name = binary}) -> #{type => string};
+build_js_type(#type_mapper_type{name = boolean}) -> #{type => boolean};
+build_js_type(#type_mapper_type{name = list, body = B}) -> #{type => array, items => build_js_type(B)};
+build_js_type(#type_mapper_type{name = atom,source=value,body=V}) -> #{type => string, enum => [V]};
+build_js_type(#type_mapper_type{name = atom}) -> #{type => string};
+build_js_type(#type_mapper_type{name = pid}) -> undefined;
+build_js_type(#type_mapper_type{name = map, body = MapBody}) ->
   build_js_map(MapBody, #{
     type => object
   });
-build_js_type(#type{name = any}) -> #{type => object}.
+build_js_type(#type_mapper_type{name = any}) -> #{type => object}.
 
 
 
 build_js_map([], Spec) ->
   Spec;
-build_js_map([{#type{source=value,body=Key},Value}|MapBody], #{} = Spec) ->
+build_js_map([{#type_mapper_type{source=value,body=Key},Value}|MapBody], #{} = Spec) ->
   Properties = (maps:get(properties, Spec, #{}))#{Key => build_js_type(Value)},
   build_js_map(MapBody, Spec#{properties => Properties});
 
-build_js_map([{#type{},Value}|MapBody], #{} = Spec) ->
+build_js_map([{#type_mapper_type{},Value}|MapBody], #{} = Spec) ->
   Properties = (maps:get(patternProperties, Spec, #{}))#{<<".*">> => build_js_type(Value)},
   build_js_map(MapBody, Spec#{patternProperties => Properties}).
 
