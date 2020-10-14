@@ -8,6 +8,7 @@
 
 all() ->
   [
+    equal_map_to_record,
     non_neg_integer2rec,
     non_neg_integer2json,
     non_neg_integer2map,
@@ -20,6 +21,7 @@ all() ->
     outer_rec2rec,
     outer_rec2json,
     atom_value,
+    atom_value_autoconvert,
     atom_value_schema,
     atom_type,
     atom_type_schema,
@@ -32,10 +34,12 @@ all() ->
     map_type2map,
     map_type_schema,
 
+
     map_with_values,
     map_with_values_schema,
     typed_map,
     list_type,
+    list_type_with_undefined,
     list_type_schema,
     any_value,
     ranged_integer,
@@ -51,6 +55,8 @@ all() ->
 
     any,
     any_schema,
+
+    untyped_schema,
 
 
     referenced_types_schema1,
@@ -68,8 +74,15 @@ all() ->
 
     default_value,
     default_value_not_undefined,
+    default_blank_value_not_in_map,
+    default_value_with_forced_undefined,
+    skip_map_defaults,
 
-    atom_or_record
+    atom_or_record,
+
+    allow_miss_mandatory,
+
+    autofill_map_primary_key
   ].
 
 
@@ -85,6 +98,7 @@ non_neg_integer2rec(_) ->
   {error, #{path := [t_non_neg_int,key], reason := lacks_mandatory}} = type_mapper:record(?MODULE, t_non_neg_int, #{}),
   {error, #{path := [t_non_neg_int,key], reason := negative_integer}} = type_mapper:record(?MODULE, t_non_neg_int, #{key => -15}),
   {error, #{path := [t_non_neg_int,key], reason := non_integer}} = type_mapper:record(?MODULE, t_non_neg_int, #{key => <<"15">>}),
+  #non_neg_integer{key = 15} = type_mapper:record(?MODULE, t_non_neg_int, #{key => <<"15">>}, #{allow_type_convertion => true}),
   ok.
 
 non_neg_integer2json(_) ->
@@ -149,6 +163,7 @@ integer_with_default(_) ->
   #integer_with_default{key = -15} = type_mapper:record(?MODULE, integer_with_default, #{key => -15}),
   #integer_with_default{key = 5} = type_mapper:record(?MODULE, integer_with_default, #{}),
   {error, #{path := [integer_with_default,key], reason := non_integer}} = type_mapper:record(?MODULE, integer_with_default, #{key => <<"15">>}),
+  #integer_with_default{key = 15} = type_mapper:record(?MODULE, integer_with_default, #{<<"key">> => <<"15">>}, #{allow_type_convertion => true}),
   ok.
 
 
@@ -178,6 +193,9 @@ outer_rec2rec(_) ->
   #outer_rec{nested = #nested_rec{key = 10}} = type_mapper:record(?MODULE, outer_rec, #{nested => #{key => 10}}),
   #outer_rec{nested = #nested_rec{key = 10}} = type_mapper:record(?MODULE, outer_rec, #{<<"nested">> => #{key => 10}}),
   #outer_rec{nested = #nested_rec{key = 10}} = type_mapper:record(?MODULE, outer_rec, #{<<"nested">> => #{<<"key">> => 10}}),
+
+  #outer_rec{nested = #nested_rec{key = 10}} = type_mapper:record(?MODULE, outer_rec, #{<<"nested">> => #{<<"key">> => <<"10">>}},
+    #{allow_type_convertion => true}),
   ok.
 
 
@@ -188,8 +206,11 @@ outer_rec2json(_) ->
 
 
 
+-type atom_key2_type() :: true|false|other.
+
 -record(atom_value, {
-  key :: a | b | c | non_neg_integer()
+  key :: a | b | c | non_neg_integer(),
+  key2 = true :: atom_key2_type()
 }).
 
 
@@ -198,6 +219,16 @@ outer_rec2json(_) ->
 atom_value(_) ->
   #atom_value{key = a} = type_mapper:record(?MODULE, atom_value, #{key => <<"a">>}),
   #atom_value{key = 5} = type_mapper:record(?MODULE, atom_value, #{key => 5}),
+  ok.
+
+
+
+atom_value_autoconvert(_) ->
+  #atom_value{key2 = true} = type_mapper:record(?MODULE, atom_value, #{key => <<"a">>, key2 => <<"true">>},
+    #{allow_type_convertion => true}),
+  #atom_value{key2 = other} = type_mapper:record(?MODULE, atom_value, #{key => <<"a">>, key2 => <<"other">>},
+    #{allow_type_convertion => true}),
+  % {error, #{}} = type_mapper:record(?MODULE, atom_value, #{key => <<"a">>, key2 => <<"other">>}),
   ok.
 
 
@@ -222,8 +253,7 @@ atom_value_schema(_) ->
 
 atom_type(_) ->
   a = type_mapper:record(?MODULE, atom_type, a),
-  % This is a bad behaviour due to binary_to_atom() security issues
-  % a = type_mapper:record(?MODULE, atom_type, <<"a">>),
+  a = type_mapper:record(?MODULE, atom_type, <<"a">>, #{allow_type_convertion => true}),
   {error, #{reason := non_atom, path := [atom_type]}} = type_mapper:record(?MODULE, atom_type, <<"a">>),
   {error, #{reason := non_atom, path := [atom_type]}} = type_mapper:record(?MODULE, atom_type, #{}),
   ok.
@@ -277,9 +307,11 @@ map_with_values_schema(_) ->
 -type t_boolean() :: #boolean{}.
 
 boolean(_) ->
-  #boolean{key = true} = type_mapper:record(?MODULE, t_boolean, #{key => <<"true">>}),
+  #boolean{key = true} = type_mapper:record(?MODULE, t_boolean, #{key => <<"true">>}, #{allow_type_convertion => true}),
+  {error, #{}} = type_mapper:record(?MODULE, t_boolean, #{key => <<"true">>}),
   #boolean{key = true} = type_mapper:record(?MODULE, t_boolean, #{key => true}),
-  #boolean{key = false} = type_mapper:record(?MODULE, t_boolean, #{key => <<"false">>}),
+  #boolean{key = false} = type_mapper:record(?MODULE, t_boolean, #{key => <<"false">>}, #{allow_type_convertion => true}),
+  {error, #{}} = type_mapper:record(?MODULE, t_boolean, #{key => <<"false">>}),
   #boolean{key = false} = type_mapper:record(?MODULE, t_boolean, #{key => false}),
   ok.
 
@@ -349,7 +381,8 @@ user_union_schema(_) ->
 -type item() :: #item{}.
 
 -record(map_container, {
-  items = #{} :: #{binary() => item()}
+  items = #{} :: #{binary() => item()},
+  meta = undefined :: #{atom() => binary()}
 }).
 
 -type map_container() :: #map_container{}.
@@ -364,6 +397,16 @@ map_type(_) ->
 map_type2map(_) ->
   #{items := #{<<"a">> := #{title := <<"b">>} }} =
     type_mapper:map(?MODULE, map_container, #{<<"items">> => #{<<"a">> => #{<<"title">> => <<"b">>}}}),
+
+  {error, #{reason := non_map_input}} = type_mapper:map(?MODULE, map_container, #{<<"items">> => #{<<"a">> => null}}),
+
+  #{items := #{<<"a">> := undefined}} = type_mapper:map(?MODULE, map_container, #{<<"items">> => #{<<"a">> => null}},
+    #{allow_forced_undefined => true}),
+
+  #{meta := #{a := undefined}} = type_mapper:map(?MODULE, map_container, #{<<"meta">> => #{<<"a">> => undefined}},
+    #{allow_forced_undefined => true, allow_type_convertion => true}),
+  #{meta := #{a := undefined}} = type_mapper:map(?MODULE, map_container, #{<<"meta">> => #{<<"a">> => null}},
+    #{allow_forced_undefined => true, allow_type_convertion => true}),
   ok.
 
 
@@ -436,8 +479,29 @@ list_type(_) ->
     type_mapper:record(?MODULE, list_container, #{items => [#{title => <<"a">>}]}),
 
   {error, #{reason := non_list, path := [list_container, items]}} =
-    type_mapper:record(?MODULE, list_container, #{items => #{title => <<"a">>}}),    
+    type_mapper:record(?MODULE, list_container, #{items => #{title => <<"a">>}}),
+
   ok.
+
+
+
+
+
+
+
+-record(list_type_with_undefined, {
+  items = undefined :: [number()]
+}).
+
+
+list_type_with_undefined(_) ->
+  #list_type_with_undefined{items = undefined} =
+    type_mapper:record(?MODULE, list_type_with_undefined, #{items => undefined}),
+  {error, #{detail := null}} = type_mapper:record(?MODULE, list_type_with_undefined, #{items => null}),
+  #list_type_with_undefined{items = undefined} =
+    type_mapper:record(?MODULE, list_type_with_undefined, #{items => null}, #{allow_type_convertion => true}),
+  ok.
+
 
 list_type_schema(_) ->
   #{
@@ -482,14 +546,16 @@ any_value(_) ->
 
 
 
+-type listen_port() :: 1..65000.
 
-
--type listen_spec() :: 1..65000 | binary().
+-type listen_spec() :: listen_port() | binary().
 
 ranged_integer(_) ->
   5 = type_mapper:record(?MODULE, listen_spec, 5),
   {error, #{reason := out_of_range}} = type_mapper:record(?MODULE, listen_spec, 0),
   {error, #{reason := out_of_range}} = type_mapper:record(?MODULE, listen_spec, 100000),
+  {error, #{reason := out_of_range}} = type_mapper:record(?MODULE, listen_port, <<"5">>),
+  5 = type_mapper:record(?MODULE, listen_port, <<"5">>, #{allow_type_convertion => true}),
   <<"spec">> = type_mapper:record(?MODULE, listen_spec, <<"spec">>),
   ok.
 
@@ -558,6 +624,25 @@ any(_) ->
 
 any_schema(_) ->
   #{type := object} = type_mapper:json_schema(?MODULE, any_type).
+
+
+
+-record(rec_with_untyped, {
+  key1 = undefined :: integer(),
+  key2
+}).
+
+
+untyped_schema(_) ->
+  #{
+    type := object,
+    properties := #{
+      key1 := #{type := number}
+    } = Props
+  } = type_mapper:json_schema(?MODULE, rec_with_untyped),
+  [key1] = maps:keys(Props),
+  ok.
+
 
 
 
@@ -751,6 +836,9 @@ default_value(_) ->
 
 -record(rec_with_default_non_undefined, {
   key = true :: boolean(),
+  key_false = false :: boolean(),
+  items_undef = undefined :: [number()],
+  items_list = [] :: [number()],
   subrec = #rec_with_default{} :: #rec_with_default{},
   submap = #{} :: #{}
 }).
@@ -759,8 +847,43 @@ default_value_not_undefined(_) ->
   #rec_with_default_non_undefined{key = true, submap = #{},
     subrec = #rec_with_default{key = undefined}} = 
     type_mapper:record(?MODULE, rec_with_default_non_undefined, #{key => true}),
-  #{key := true, submap := #{}, subrec := #{}} = type_mapper:map(?MODULE, rec_with_default_non_undefined, #{key => true}),
+  #{key := true, submap := #{}, subrec := #{}} =
+    type_mapper:map(?MODULE, rec_with_default_non_undefined, #{key => true}, #{skip_map_defaults => false}),
   ok.
+
+
+
+
+default_blank_value_not_in_map(_) ->
+  Res = type_mapper:map(?MODULE, rec_with_default_non_undefined, #{}, #{skip_map_defaults => true}),
+  [] == maps:keys(Res) orelse begin
+    ct:pal("was waiting for empty, map, got: ~p", [Res]),
+    error([not_empty_map,Res])
+  end,
+  ok.
+
+
+default_value_with_forced_undefined(_) ->
+  #{items_list := undefined} = type_mapper:map(?MODULE, rec_with_default_non_undefined, 
+    #{<<"items_list">> => null}, #{allow_forced_undefined => true}),
+  #{items_list := undefined} = type_mapper:map(?MODULE, rec_with_default_non_undefined, 
+    #{<<"items_list">> => null}, #{allow_forced_undefined => true}),
+
+  #{items_list := undefined} = type_mapper:map(?MODULE, rec_with_default_non_undefined, 
+    #{<<"items_list">> => undefined}, #{allow_forced_undefined => true, skip_map_defaults => true}),
+  #{items_list := undefined} = type_mapper:map(?MODULE, rec_with_default_non_undefined, 
+    #{<<"items_list">> => undefined}, #{allow_forced_undefined => true, skip_map_defaults => true}),
+  ok.
+
+
+skip_map_defaults(_) ->
+  #{items_undef := undefined} = type_mapper:map(?MODULE, rec_with_default_non_undefined, 
+    #{<<"items_undef">> => undefined}, #{skip_map_defaults => true}),
+
+  #{key_false := false} = type_mapper:map(?MODULE, rec_with_default_non_undefined, 
+    #{<<"key_false">> => false}, #{skip_map_defaults => true}),
+  ok.
+
 
 
 -record(atom_or_record_rec, {
@@ -771,4 +894,103 @@ default_value_not_undefined(_) ->
 
 atom_or_record(_) ->
   atom = type_mapper:record(?MODULE, atom_or_record, atom).
-  
+
+
+
+equal_map_to_record(_) ->
+  Records = ?MODULE:'$mapper_records'(),
+  lists:map(fun(RName) ->
+    M1 = type_mapper:map(?MODULE, RName, #{}),
+    R2 = type_mapper:record(?MODULE, RName, M1),
+    M3 = type_mapper:map(?MODULE, RName, R2),
+    R4 = type_mapper:record(?MODULE, RName, M3),
+    M5 = type_mapper:map(?MODULE, RName, R4),
+    R6 = type_mapper:record(?MODULE, RName, M5),
+    R4 == R6 orelse begin
+      ct:pal("R4: ~p\nR6: ~p\n", [R4, R6]),
+      error([r4_r6,RName])
+    end,
+    M5 == M3 orelse begin
+      ct:pal("M5: ~p\nM3: ~p\n", [M5, M3]),
+      error([m5_m3,RName])
+    end
+  end, Records),
+  ok.
+
+
+
+
+-record(mandatory_field, {
+  name :: binary()
+}).
+
+
+allow_miss_mandatory(_) ->
+  Map1 = type_mapper:map(?MODULE, mandatory_field, #{}, #{allow_miss_mandatory => true}),
+  Map1 = #{},
+  Map2 = #{name => <<"name">>},
+  Map2 = type_mapper:map(?MODULE, mandatory_field, Map2),
+  ok.
+
+
+
+
+-type primary_key(X) :: X.
+-type sort_index(X) :: X.
+
+-record(map_entry, {
+  name :: primary_key(binary()),
+  position = undefined :: sort_index(non_neg_integer())
+}).
+
+-type auto_map() :: #{binary() => #map_entry{}}.
+
+
+autofill_map_primary_key(_) ->
+  % Here we check that primary_key and sort_index are filled
+  #{} = Map1 = type_mapper:map(?MODULE, auto_map, #{<<"a">> => #{}, <<"b">> => #{}}),
+  #{
+    <<"a">> := #{name := <<"a">>, position := 0},
+    <<"b">> := #{name := <<"b">>, position := 1}
+  } = Map1,
+
+
+
+  % Now we check that we can override both fields
+  #{} = Map2 = type_mapper:map(?MODULE, auto_map, #{<<"a">> => #{position => 40}, <<"b">> => #{name => <<"c">>}}),
+  #{
+    <<"a">> := #{name := <<"a">>, position := 40},
+    <<"b">> := #{name := <<"c">>, position := 1}
+  } = Map2,
+
+
+  % Here we check that override will take in consideration binary/atom issues
+  #{} = Map2 = type_mapper:map(?MODULE, auto_map, #{<<"a">> => #{position => 40}, <<"b">> => #{<<"name">> => <<"c">>}}),
+  #{
+    <<"a">> := #{name := <<"a">>, position := 40},
+    <<"b">> := #{name := <<"c">>, position := 1}
+  } = Map2,
+
+  % Validate mandatory fields
+  {error, _} = type_mapper:map(?MODULE, auto_map, #{<<"a">> => #{}, <<"b">> => #{}}, #{fill_auto_fields => false}),
+  #{} = Map3 = type_mapper:map(?MODULE, auto_map, #{<<"a">> => #{}, <<"b">> => #{}},
+      #{fill_auto_fields => false, allow_miss_mandatory => true}),
+  #{
+    <<"a">> := #{} = A,
+    <<"b">> := #{} = B
+  } = Map3,
+
+  [] = maps:keys(A),
+  [] = maps:keys(B),
+
+
+
+  % Now let's check stable order
+  #{} = Map4 = type_mapper:map(?MODULE, auto_map, [{<<"b">>, #{}}, {<<"a">>, #{}}]),
+  #{
+    <<"b">> := #{name := <<"b">>, position := 0},
+    <<"a">> := #{name := <<"a">>, position := 1}
+  } = Map4,
+
+  ok.
+
