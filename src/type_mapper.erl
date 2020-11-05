@@ -26,7 +26,8 @@
   allow_forced_undefined = ?ALLOW_FORCED_UNDEFINED :: boolean(),
   allow_type_convertion = ?ALLOW_TYPE_CONVERTION :: boolean(),
   allow_miss_mandatory = ?ALLOW_MISS_MANDATORY :: boolean(),
-  fill_auto_fields = ?FILL_AUTO_FIELDS :: boolean()
+  fill_auto_fields = ?FILL_AUTO_FIELDS :: boolean(),
+  validators = #{}
 }).
 
 
@@ -251,12 +252,16 @@ json2output0(#{module := Module, output := OutType} = Opts, TName, Input) ->
     allow_forced_undefined = maps:get(allow_forced_undefined, Opts, ?ALLOW_FORCED_UNDEFINED),
     allow_type_convertion = maps:get(allow_type_convertion, Opts, ?ALLOW_TYPE_CONVERTION),
     allow_miss_mandatory = maps:get(allow_miss_mandatory, Opts, ?ALLOW_MISS_MANDATORY),
-    fill_auto_fields = maps:get(fill_auto_fields, Opts, ?FILL_AUTO_FIELDS)
+    fill_auto_fields = maps:get(fill_auto_fields, Opts, ?FILL_AUTO_FIELDS),
+    validators = maps:get(validators, Opts, #{})
   },
-  json2output(State, TName, Input).
+  case validate_against(State, Input, [#type_mapper_type{name=TName,source=user,body=undefined}], undefined) of
+    {ok, Value} -> Value;
+    {error, #{} = E} -> {error, E}
+  end.
 
 
-json2output(#mapper{module=Module, output = OutType} = M, TName, Input) ->
+translate_user_type(#mapper{module=Module, output = OutType} = M, TName, Input) ->
   case Module:'$mapper_type'(TName) of
     #type_mapper_type{name = record, body = RecName} when is_map(Input) orelse is_tuple(Input)->
       case translate_record(M, RecName, Input) of
@@ -295,7 +300,7 @@ json2output(#mapper{module=Module, output = OutType} = M, TName, Input) ->
       case translate_record(M, TName, Input) of
         {error, #{reason := unknown_record}} ->
           {error, #{reason => unknown_type, detail => TName}};
-        {error, E} ->
+        {error, #{} = E} ->
           {error, E};
         Record when element(1,Record) == TName andalso OutType == record ->
           Record;
@@ -340,10 +345,16 @@ translate_record(_M, RecName, _Input) ->
 fill_record_fields(#mapper{}, Input, [], Record) ->
   {ok, Input, Record};
 
-fill_record_fields(#mapper{output = OutType}=M, #{'$reset' := true} = Input, Types, Record) ->
+fill_record_fields(#mapper{output = OutType, allow_forced_undefined = true}=M, #{'$reset' := true} = Input, Types, Record) ->
   case OutType of
     map -> fill_record_fields(M, maps:remove('$reset', Input), Types, Record#{'$reset' => true});
     record -> fill_record_fields(M, maps:remove('$reset', Input), Types, Record)
+  end;
+
+fill_record_fields(#mapper{output = OutType, allow_forced_undefined = true}=M, #{<<"$reset">> := true} = Input, Types, Record) ->
+  case OutType of
+    map -> fill_record_fields(M, maps:remove(<<"$reset">>, Input), Types, Record#{'$reset' => true});
+    record -> fill_record_fields(M, maps:remove(<<"$reset">>, Input), Types, Record)
   end;
 
 fill_record_fields(#mapper{} = M, Input, [undefined|Fields], Record) ->
@@ -411,8 +422,8 @@ validate_against(#mapper{allow_forced_undefined = true}, undefined, _, _) ->
 validate_against(#mapper{allow_forced_undefined = true}, null, _, _) ->
   {ok, undefined};
 
-validate_against(#mapper{}, _Input, [], LastError) ->
-  {error, or_(LastError, #{reason => unmatched_type})};
+validate_against(#mapper{}, Input, [], LastError) ->
+  {error, or_(LastError, #{reason => unmatched_type, detail => Input})};
 
 validate_against(#mapper{allow_type_convertion = true}=M, Input,
   [#type_mapper_type{name=IntType}=T|Types], LastError) when is_binary(Input) andalso 
@@ -490,13 +501,23 @@ validate_against(#mapper{allow_type_convertion=Allow}=M, Input, [#type_mapper_ty
     true -> validate_against(M, Input, Types, or_(LastError,#{reason => non_atom}))
   end;
 
-validate_against(#mapper{}=M, Input, [#type_mapper_type{name = TName, source = user, body = undefined}|Types], LastError) ->
-  case json2output(M, TName, Input) of
-    {error, E} ->
-      validate_against(M, Input, Types, or_(LastError, E));
-    Data ->
-      {ok, Data}
+validate_against(#mapper{validators = Validators, allow_type_convertion = Allow}=M, Input, 
+  [#type_mapper_type{name = TName, source = user, body = undefined}|Types], LastError) ->
+  case maps:get(TName, Validators, undefined) of
+    undefined ->
+      case translate_user_type(M, TName, Input) of
+        {error, E} ->
+          validate_against(M, Input, Types, or_(LastError, E));
+        Data ->
+          {ok, Data}
+      end;
+    Fun ->
+      case Fun(Input, Allow) of
+        {ok, Data} -> {ok, Data};
+        {error, #{} = E} -> validate_against(M, Input, Types, or_(LastError, E))
+      end
   end;
+
 
 validate_against(#mapper{}=M, Input, [#type_mapper_type{source = user, body = Type}|Types], LastError) ->
   case validate_against(M, Input, [Type], LastError) of
@@ -826,7 +847,7 @@ fields2json_schema(Module, [#type_mapper_field{name=Name,default = Dfl, default_
     _ -> Properties1#{Name => Spec2}
   end,
   ObjectSpec1 = ObjectSpec#{properties => Properties2},
-  ObjectSpec2 = case Dfl of
+  ObjectSpec2 = case DflT of
     undefined ->
       Required = maps:get(required, ObjectSpec, []) ++ [Name],
       ObjectSpec1#{required => Required};

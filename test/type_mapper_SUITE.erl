@@ -82,7 +82,12 @@ all() ->
 
     allow_miss_mandatory,
 
-    autofill_map_primary_key
+    autofill_map_primary_key,
+    autofill_integer_primary_key,
+
+    reset_hack,
+
+    custom_types_validation
   ].
 
 
@@ -168,9 +173,11 @@ integer_with_default(_) ->
 
 
 integer_with_default_schema(_) ->
- #{components := #{schemas := #{integer_with_default := #{properties := #{
-    key := #{type := number, default := 5}
-  }}}},
+ #{components := #{schemas := #{integer_with_default := #{
+    properties := #{
+      key := #{type := number, default := 5}
+    }
+  }}},
   '$ref' := <<"#/components/schemas/integer_with_default">>} = type_mapper:json_schema(?MODULE, integer_with_default).
 
 
@@ -301,7 +308,7 @@ map_with_values_schema(_) ->
 
 
 -record(boolean, {
-  key :: boolean()
+  key = undefined :: boolean()
 }).
 
 -type t_boolean() :: #boolean{}.
@@ -317,10 +324,13 @@ boolean(_) ->
 
 
 boolean_schema(_) ->
-  #{components := #{schemas := #{boolean := #{properties := #{
-    key := #{type := boolean}
-  }}}},
+  #{components := #{schemas := #{boolean := Props}},
   '$ref' := <<"#/components/schemas/boolean">>} = type_mapper:json_schema(?MODULE, t_boolean),
+  #{properties := #{
+    key := #{type := boolean}
+  },
+  type := object} = Props,
+  [properties,type] = maps:keys(Props),
   ok.
 
 
@@ -993,4 +1003,59 @@ autofill_map_primary_key(_) ->
   } = Map4,
 
   ok.
+
+
+
+-type ts_pid() :: 0..8191.
+
+-record(autofill_entry, {
+  pid :: primary_key(ts_pid()),
+  value :: binary()
+}).
+
+-record(autofill_container, {
+  items = undefined :: #{ts_pid() => #autofill_entry{}}
+}).
+
+
+autofill_integer_primary_key(_) ->
+  #{items := #{15 := #{pid := 15, value := <<"hi">>} }} = type_mapper:map(?MODULE, autofill_container, 
+    #{<<"items">> => #{<<"15">> => #{<<"value">> => <<"hi">>}}}, 
+    #{allow_type_convertion => true}),
+  ok.
+
+
+
+-record(reset_rec, {
+  key = undefined :: integer()
+}).
+
+reset_hack(_) ->
+  #{'$reset' := true} = type_mapper:map(?MODULE, reset_rec, #{<<"$reset">> => true}, #{allow_forced_undefined => true}),
+  {error, #{}} = type_mapper:map(?MODULE, reset_rec, #{<<"$reset">> => true}, #{}),
+  ok.
+
+
+
+
+
+-type hexcolor() :: binary().
+
+
+custom_types_validation(_) ->
+  <<"badhexcolor">> = type_mapper:record(?MODULE, hexcolor, <<"badhexcolor">>),
+  Validator = fun
+    (<<"#",RGB:6/binary>>, true) -> {ok, RGB};
+    (<<RGB:6/binary>>, _) -> {ok, RGB};
+    (_Input, _AllowTypeCovertion) -> {error, #{reason => invalid_input}}
+  end,
+  {error, #{}} = type_mapper:record(?MODULE, hexcolor, <<"badhexcolor">>, #{validators => #{hexcolor => Validator}}),
+  <<"000000">> = type_mapper:record(?MODULE, hexcolor, <<"#000000">>, 
+      #{validators => #{hexcolor => Validator}, allow_type_convertion => true}),
+  {error, _} = type_mapper:record(?MODULE, hexcolor, <<"#000000">>, #{validators => #{hexcolor => Validator}}),
+  <<"000000">> = type_mapper:record(?MODULE, hexcolor, <<"000000">>, #{validators => #{hexcolor => Validator}}),
+  ok.
+
+
+
 
