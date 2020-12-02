@@ -73,6 +73,7 @@ all() ->
 
 
     default_value,
+    default_undefined_to_map,
     default_value_not_undefined,
     default_blank_value_not_in_map,
     default_value_with_forced_undefined,
@@ -844,6 +845,16 @@ default_value(_) ->
 
 
 
+-record(default_undefined_to_map, {
+  key = undefined :: any()
+}).
+
+default_undefined_to_map(_) ->
+  #{} = Map = type_mapper:map(?MODULE, default_undefined_to_map, #default_undefined_to_map{}, #{skip_map_defaults => true}),
+  #{} == Map orelse error([useless_keys_in_map, Map]),
+  [] = maps:keys(Map).
+
+
 -record(rec_with_default_non_undefined, {
   key = true :: boolean(),
   key_false = false :: boolean(),
@@ -888,7 +899,7 @@ default_value_with_forced_undefined(_) ->
 
 skip_map_defaults(_) ->
   #{items_undef := undefined} = type_mapper:map(?MODULE, rec_with_default_non_undefined, 
-    #{<<"items_undef">> => undefined}, #{skip_map_defaults => true}),
+    #{<<"items_undef">> => undefined}, #{skip_map_defaults => trivial}),
 
   #{key_false := false} = type_mapper:map(?MODULE, rec_with_default_non_undefined, 
     #{<<"key_false">> => false}, #{skip_map_defaults => true}),

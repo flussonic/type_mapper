@@ -385,6 +385,8 @@ fill_record_fields(#mapper{output = OutType}=M, Input, [#type_mapper_field{name=
     Class == default orelse (Class == input andalso ExtractedValue == DefaultValue) orelse
     (Class == lack andalso M#mapper.allow_miss_mandatory) ->
       NewOutput = case OutType of
+        map when Class == input andalso M#mapper.skip_map_defaults == true andalso
+          ExtractedValue == DefaultValue andalso ExtractedValue == undefined -> Record;
         map when Class == input -> Record#{Name => ExtractedValue};
         map when M#mapper.skip_map_defaults == true andalso Class == default -> Record;
         map when M#mapper.skip_map_defaults == trivial andalso Class == default andalso 
@@ -535,7 +537,7 @@ validate_against(#mapper{allow_type_convertion=Allow}=M, Input, [#type_mapper_ty
     false -> {ok, false};
     <<"false">> when Allow -> {ok, false};
     0 when Allow -> {ok, false};
-    _ -> validate_against(M, Input, Types, or_(LastError, #{reason => non_boolean_value}))
+    _ -> validate_against(M, Input, Types, or_(LastError, #{reason => non_boolean_value, detail => Input}))
   end;
 
 
