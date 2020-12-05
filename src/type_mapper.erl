@@ -812,8 +812,37 @@ type2json_schema(Module, TName) ->
     #type_mapper_type{} = T ->
       build_js_type(T);
     [_|_] = Types ->
-      #{anyOf => [build_js_type(T) || T <- Types]}
+      build_js_any_types(Types)
   end.
+
+build_js_any_types(Types) ->
+  Types1 = [build_js_type(T) || T <- Types],
+  Types2 = try_to_collapse(Types1),
+  case Types2 of
+    [T] -> T;
+    _ -> #{anyOf => Types2}
+  end.
+
+try_to_collapse([#{type := string, enum := Enum} = T|Types]) ->
+  {Enums, Others} = lists:partition(fun(#{} = T1) ->
+    case T1 of
+      #{type := string, enum := _} -> true;
+      #{} -> false
+    end
+  end, Types),
+
+  Values = lists:flatmap(fun(#{type := string, enum := E}) ->
+    E
+  end, Enums),
+  [T#{enum => Enum ++ Values}|try_to_collapse(Others)];
+
+try_to_collapse([T|Types]) ->
+  [T|try_to_collapse(Types -- [T])];
+
+try_to_collapse([]) ->
+  [].
+
+
 
 
 record2json_schema(Module, RecName) ->
@@ -836,7 +865,7 @@ fields2json_schema(Module, [undefined|Fields], ObjectSpec) ->
 fields2json_schema(Module, [#type_mapper_field{name=Name,default = Dfl, default_type = DflT, types=Types}|Fields], ObjectSpec) ->
   Spec1 = case Types of
     [#type_mapper_type{} = T] -> build_js_type(T);
-    [_,_|_] -> #{anyOf => [build_js_type(T) || T <- Types]}
+    [_,_|_] -> build_js_any_types(Types)
   end,
   Spec2 = case Dfl of
     undefined when DflT == undefined -> Spec1;

@@ -23,6 +23,7 @@ all() ->
     atom_value,
     atom_value_autoconvert,
     atom_value_schema,
+    atom_binary_value_schema,
     atom_type,
     atom_type_schema,
     boolean,
@@ -244,15 +245,22 @@ atom_value_schema(_) ->
   #{components := #{schemas := #{atom_value := #{properties := #{
     key := #{
       anyOf := [
-        #{type := string, enum := [a]},
-        #{type := string, enum := [b]},
-        #{type := string, enum := [c]},
+        #{type := string, enum := [a,b,c]},
         #{type := number}
       ]
     }
   }}}},
   '$ref' := <<"#/components/schemas/atom_value">>} = type_mapper:json_schema(?MODULE, atom_value),
   ok.
+
+
+
+-type atom_binary_value() :: atom() | binary().
+
+atom_binary_value_schema(_) ->
+  #{type := string} = type_mapper:json_schema(?MODULE, atom_binary_value),
+  ok.
+
 
 
 
