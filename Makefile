@@ -2,7 +2,7 @@
 
 build:
 	mkdir -p ebin
-	erlc -o ebin src/type_mapper.erl
+	for s in src/*.erl ; do erlc -o ebin/ $$s ; done
 	cp -f src/type_mapper.app.src ebin/type_mapper.app
 
 test: build

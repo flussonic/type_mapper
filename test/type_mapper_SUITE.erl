@@ -74,7 +74,7 @@ all() ->
 
 
     default_value,
-    default_undefined_to_map,
+    % default_undefined_to_map,
     default_value_not_undefined,
     default_blank_value_not_in_map,
     default_value_with_forced_undefined,
@@ -84,11 +84,7 @@ all() ->
 
     allow_miss_mandatory,
 
-    autofill_map_primary_key,
-    autofill_integer_primary_key,
-
-    reset_hack,
-
+    query_params_validation,
     custom_types_validation
   ].
 
@@ -171,6 +167,10 @@ integer_with_default(_) ->
   #integer_with_default{key = 5} = type_mapper:record(?MODULE, integer_with_default, #{}),
   {error, #{path := [integer_with_default,key], reason := non_integer}} = type_mapper:record(?MODULE, integer_with_default, #{key => <<"15">>}),
   #integer_with_default{key = 15} = type_mapper:record(?MODULE, integer_with_default, #{<<"key">> => <<"15">>}, #{allow_type_convertion => true}),
+
+  #{key := 5} = type_mapper:map(?MODULE, integer_with_default, #{}, #{skip_map_defaults => false}),
+  #{key := 5} = type_mapper:map(?MODULE, integer_with_default, #{}, #{skip_map_defaults => trivial}),
+  #{key := 5} = type_mapper:map(?MODULE, integer_with_default, #{}, #{}),
   ok.
 
 
@@ -303,9 +303,7 @@ map_with_values_schema(_) ->
     properties := #{
       key1 := #{type := number}
     },
-    patternProperties := #{
-      <<".*">> := #{type := string}
-    }
+    additionalProperties := #{type := string}
   } = type_mapper:json_schema(?MODULE, map_with_values).
 
 
@@ -439,9 +437,7 @@ map_type_schema(_) ->
           properties := #{
             items := #{
               type := object,
-              patternProperties := #{
-                <<".*">> := #{'$ref' := <<"#/components/schemas/item">>}
-              }
+              additionalProperties := #{'$ref' := <<"#/components/schemas/item">>}
             }
           }        
         }
@@ -516,7 +512,10 @@ list_type(_) ->
 list_type_with_undefined(_) ->
   #list_type_with_undefined{items = undefined} =
     type_mapper:record(?MODULE, list_type_with_undefined, #{items => undefined}),
-  {error, #{detail := null}} = type_mapper:record(?MODULE, list_type_with_undefined, #{items => null}),
+
+  % FIXME: need to decide which one is correct
+  % {error, #{detail := null}} = type_mapper:record(?MODULE, list_type_with_undefined, #{items => null}),
+  % #list_type_with_undefined{items = undefined} = type_mapper:record(?MODULE, list_type_with_undefined, #{items => null}),
   #list_type_with_undefined{items = undefined} =
     type_mapper:record(?MODULE, list_type_with_undefined, #{items => null}, #{allow_type_convertion => true}),
   ok.
@@ -893,14 +892,10 @@ default_blank_value_not_in_map(_) ->
 
 
 default_value_with_forced_undefined(_) ->
-  #{items_list := undefined} = type_mapper:map(?MODULE, rec_with_default_non_undefined, 
-    #{<<"items_list">> => null}, #{allow_forced_undefined => true}),
-  #{items_list := undefined} = type_mapper:map(?MODULE, rec_with_default_non_undefined, 
+  #{items_list := undefined} = type_mapper:map(?MODULE, rec_with_default_non_undefined,
     #{<<"items_list">> => null}, #{allow_forced_undefined => true}),
 
-  #{items_list := undefined} = type_mapper:map(?MODULE, rec_with_default_non_undefined, 
-    #{<<"items_list">> => undefined}, #{allow_forced_undefined => true, skip_map_defaults => true}),
-  #{items_list := undefined} = type_mapper:map(?MODULE, rec_with_default_non_undefined, 
+  #{items_list := undefined} = type_mapper:map(?MODULE, rec_with_default_non_undefined,
     #{<<"items_list">> => undefined}, #{allow_forced_undefined => true, skip_map_defaults => true}),
   ok.
 
@@ -955,6 +950,7 @@ equal_map_to_record(_) ->
 
 
 allow_miss_mandatory(_) ->
+  {error, #{reason := non_map_input}} = type_mapper:map(?MODULE, mandatory_field, {error, #{}}),
   Map1 = type_mapper:map(?MODULE, mandatory_field, #{}, #{allow_miss_mandatory => true}),
   Map1 = #{},
   Map2 = #{name => <<"name">>},
@@ -963,96 +959,6 @@ allow_miss_mandatory(_) ->
 
 
 
-
--type primary_key(X) :: X.
--type sort_index(X) :: X.
-
--record(map_entry, {
-  name :: primary_key(binary()),
-  position = undefined :: sort_index(non_neg_integer())
-}).
-
--type auto_map() :: #{binary() => #map_entry{}}.
-
-
-autofill_map_primary_key(_) ->
-  % Here we check that primary_key and sort_index are filled
-  #{} = Map1 = type_mapper:map(?MODULE, auto_map, #{<<"a">> => #{}, <<"b">> => #{}}),
-  #{
-    <<"a">> := #{name := <<"a">>, position := 0},
-    <<"b">> := #{name := <<"b">>, position := 1}
-  } = Map1,
-
-
-
-  % Now we check that we can override both fields
-  #{} = Map2 = type_mapper:map(?MODULE, auto_map, #{<<"a">> => #{position => 40}, <<"b">> => #{name => <<"c">>}}),
-  #{
-    <<"a">> := #{name := <<"a">>, position := 40},
-    <<"b">> := #{name := <<"c">>, position := 1}
-  } = Map2,
-
-
-  % Here we check that override will take in consideration binary/atom issues
-  #{} = Map2 = type_mapper:map(?MODULE, auto_map, #{<<"a">> => #{position => 40}, <<"b">> => #{<<"name">> => <<"c">>}}),
-  #{
-    <<"a">> := #{name := <<"a">>, position := 40},
-    <<"b">> := #{name := <<"c">>, position := 1}
-  } = Map2,
-
-  % Validate mandatory fields
-  {error, _} = type_mapper:map(?MODULE, auto_map, #{<<"a">> => #{}, <<"b">> => #{}}, #{fill_auto_fields => false}),
-  #{} = Map3 = type_mapper:map(?MODULE, auto_map, #{<<"a">> => #{}, <<"b">> => #{}},
-      #{fill_auto_fields => false, allow_miss_mandatory => true}),
-  #{
-    <<"a">> := #{} = A,
-    <<"b">> := #{} = B
-  } = Map3,
-
-  [] = maps:keys(A),
-  [] = maps:keys(B),
-
-
-
-  % Now let's check stable order
-  #{} = Map4 = type_mapper:map(?MODULE, auto_map, [{<<"b">>, #{}}, {<<"a">>, #{}}]),
-  #{
-    <<"b">> := #{name := <<"b">>, position := 0},
-    <<"a">> := #{name := <<"a">>, position := 1}
-  } = Map4,
-
-  ok.
-
-
-
--type ts_pid() :: 0..8191.
-
--record(autofill_entry, {
-  pid :: primary_key(ts_pid()),
-  value :: binary()
-}).
-
--record(autofill_container, {
-  items = undefined :: #{ts_pid() => #autofill_entry{}}
-}).
-
-
-autofill_integer_primary_key(_) ->
-  #{items := #{15 := #{pid := 15, value := <<"hi">>} }} = type_mapper:map(?MODULE, autofill_container, 
-    #{<<"items">> => #{<<"15">> => #{<<"value">> => <<"hi">>}}}, 
-    #{allow_type_convertion => true}),
-  ok.
-
-
-
--record(reset_rec, {
-  key = undefined :: integer()
-}).
-
-reset_hack(_) ->
-  #{'$reset' := true} = type_mapper:map(?MODULE, reset_rec, #{<<"$reset">> => true}, #{allow_forced_undefined => true}),
-  {error, #{}} = type_mapper:map(?MODULE, reset_rec, #{<<"$reset">> => true}, #{}),
-  ok.
 
 
 
@@ -1063,18 +969,45 @@ reset_hack(_) ->
 
 custom_types_validation(_) ->
   <<"badhexcolor">> = type_mapper:record(?MODULE, hexcolor, <<"badhexcolor">>),
+  ValidatorConverter = fun
+    (<<"#",RGB:6/binary>>) -> {ok, RGB};
+    (<<RGB:6/binary>>) -> {ok, RGB};
+    (_Input) -> {error, #{reason => invalid_input}}
+  end,
+
   Validator = fun
-    (<<"#",RGB:6/binary>>, true) -> {ok, RGB};
-    (<<RGB:6/binary>>, _) -> {ok, RGB};
-    (_Input, _AllowTypeCovertion) -> {error, #{reason => invalid_input}}
+    (<<RGB:6/binary>>) -> {ok, RGB};
+    (_Input) -> {error, #{reason => invalid_input}}
   end,
   {error, #{}} = type_mapper:record(?MODULE, hexcolor, <<"badhexcolor">>, #{validators => #{hexcolor => Validator}}),
   <<"000000">> = type_mapper:record(?MODULE, hexcolor, <<"#000000">>, 
-      #{validators => #{hexcolor => Validator}, allow_type_convertion => true}),
+      #{validators => #{hexcolor => ValidatorConverter}, allow_type_convertion => true}),
   {error, _} = type_mapper:record(?MODULE, hexcolor, <<"#000000">>, #{validators => #{hexcolor => Validator}}),
   <<"000000">> = type_mapper:record(?MODULE, hexcolor, <<"000000">>, #{validators => #{hexcolor => Validator}}),
   ok.
 
 
+
+
+-type queried_record_type() :: a | b | c.
+
+-record(queried_record, {
+  name = undefined :: binary(),
+  type = undefined :: a | b | c,
+  type2 = undefined :: queried_record_type(),
+  bytes = undefined :: non_neg_integer()
+}).
+
+query_params_validation(_) ->
+  #{
+    name := [<<"a">>,<<"b">>],
+    bytes := #{'$gt' := 1500},
+    type := [a],
+    type2 := [b,c]
+  } = type_mapper:map(?MODULE, queried_record,
+    #{<<"name">> => [<<"a">>,<<"b">>], <<"type">> => [<<"a">>],
+    <<"type2">> => [<<"b">>,<<"c">>], <<"bytes">> => #{'$gt' => <<"1500">>}},
+    #{allow_type_convertion => true, skip_map_defaults => true, query_support => true}),
+  ok.
 
 

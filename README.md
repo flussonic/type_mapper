@@ -6,8 +6,9 @@ It can:
 
 * translate JSON to records according to typespecs
 * translate JSON to valid typed maps according to typespecs
+* translate records to valid typed maps
 * validate input and return errors if they happen just like ninenines/sheriff
-* give JSON schema output
+* give JSON schema output suitable for Swagger
 
 
 It will:
@@ -18,7 +19,7 @@ It will:
 
 
 
-# Details
+# Convert JSON to records
 
 You can use it to convert weakly structured and typed json input into strict type-checked erlang records or maps.
 
@@ -48,6 +49,9 @@ outer_rec2rec(_) ->
   #outer_rec{nested = #nested_rec{key = 10}} = type_mapper:record(?MODULE, outer_rec, #{nested => #{key => 10}}),
   #outer_rec{nested = #nested_rec{key = 10}} = type_mapper:record(?MODULE, outer_rec, #{<<"nested">> => #{key => 10}}),
   #outer_rec{nested = #nested_rec{key = 10}} = type_mapper:record(?MODULE, outer_rec, #{<<"nested">> => #{<<"key">> => 10}}),
+
+  Text = <<"{\"nested\":{\"key\":\"10\"}}">>,
+  #outer_rec{nested = #nested_rec{key = 10}} = type_mapper:record(?MODULE, outer_rec, jsx:decode(Text,[return_maps])),
   ok.
 
 
@@ -58,9 +62,12 @@ outer_rec2json(_) ->
 ```
 
 
+# Validate user input
+
 Second important part is validation. Here is an example:
 
 ```
   {error, #{path := [t_non_neg_int,key], reason := non_integer}} = type_mapper:map(?MODULE, t_non_neg_int, #{key => <<"15">>}),
 ```
+
 

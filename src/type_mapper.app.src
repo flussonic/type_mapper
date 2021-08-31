@@ -1,9 +1,9 @@
 {application, type_mapper,
  [
   {description, "type_mapper"},
-  {vsn, "20.09.1"},
+  {vsn, "21.08.1"},
   {registered, []},
   {applications, [kernel,stdlib]},
-  {modules, [type_mapper]},
+  {modules, [tm_converter,tm_logger,tm_validator,tm_json,tm_query_support,tm_visitor,type_mapper]},
   {env, []}
  ]}.
